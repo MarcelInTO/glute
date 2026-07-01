@@ -1,6 +1,7 @@
 # Built binaries
 /glute
 /glute.exe
+/bin/
 
 # GoReleaser output
 /dist/
