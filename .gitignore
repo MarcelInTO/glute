@@ -1,0 +1,12 @@
+# Built binaries
+/glute
+/glute.exe
+
+# GoReleaser output
+/dist/
+
+# Local logs
+*.log
+
+# Claude Code machine-local settings
+.claude/settings.local.json
