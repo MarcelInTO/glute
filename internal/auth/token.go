@@ -1,9 +1,9 @@
-// Package auth resolves and persists the GitLab access token.
+// Package auth resolves and persists the GitLab access token, per instance.
 //
 // Resolution order for reads is: the GLUTE_TOKEN environment variable (highest
-// precedence, ideal for headless/CI hosts), then a 0600 file in the config
-// directory. An OS-keychain backend can slot in here later without changing
-// callers.
+// precedence, ideal for headless/CI hosts), then a 0600 file in the instance's
+// config directory. An OS-keychain backend can slot in here later without
+// changing callers.
 package auth
 
 import (
@@ -19,23 +19,23 @@ import (
 
 const envToken = "GLUTE_TOKEN"
 
-// TokenPath returns the path to the on-disk token file (best-effort, for
+// TokenPath returns the path to an instance's token file (best-effort, for
 // display).
-func TokenPath() string {
-	dir, err := config.Dir()
+func TokenPath(instance string) string {
+	dir, err := config.InstanceDir(instance)
 	if err != nil {
 		return "token"
 	}
 	return filepath.Join(dir, "token")
 }
 
-// LoadToken resolves the active token. It returns an empty string (and no
-// error) when none is configured.
-func LoadToken() (string, error) {
+// LoadToken resolves the active token for an instance. It returns an empty
+// string (and no error) when none is configured.
+func LoadToken(instance string) (string, error) {
 	if v := strings.TrimSpace(os.Getenv(envToken)); v != "" {
 		return v, nil
 	}
-	data, err := os.ReadFile(TokenPath())
+	data, err := os.ReadFile(TokenPath(instance))
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
 	}
@@ -45,9 +45,9 @@ func LoadToken() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// StoreToken writes the token to a 0600 file in the config directory.
-func StoreToken(token string) error {
-	dir, err := config.Dir()
+// StoreToken writes an instance's token to a 0600 file in its config dir.
+func StoreToken(instance, token string) error {
+	dir, err := config.InstanceDir(instance)
 	if err != nil {
 		return err
 	}
@@ -60,22 +60,23 @@ func StoreToken(token string) error {
 	return nil
 }
 
-// DeleteToken removes the on-disk token file, if present.
-func DeleteToken() error {
-	err := os.Remove(TokenPath())
+// DeleteToken removes an instance's token file, if present.
+func DeleteToken(instance string) error {
+	err := os.Remove(TokenPath(instance))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	return err
 }
 
-// Source describes where the active token came from, for status output.
-func Source() string {
+// Source describes where an instance's active token came from, for status
+// output.
+func Source(instance string) string {
 	if strings.TrimSpace(os.Getenv(envToken)) != "" {
 		return envToken + " env var"
 	}
-	if _, err := os.Stat(TokenPath()); err == nil {
-		return TokenPath()
+	if _, err := os.Stat(TokenPath(instance)); err == nil {
+		return TokenPath(instance)
 	}
 	return ""
 }

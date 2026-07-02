@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -37,19 +36,23 @@ func runRefresh(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	cfg, err := config.Load()
+	instance, err := config.ResolveInstance(instanceFlag)
 	if err != nil {
 		return err
 	}
-	token, err := auth.LoadToken()
+	cfg, err := config.Load(instance)
+	if err != nil {
+		return err
+	}
+	token, err := auth.LoadToken(instance)
 	if err != nil {
 		return err
 	}
 	if cfg.GitLabURL == "" || token == "" {
-		return errors.New("not configured; run `glute auth` first")
+		return fmt.Errorf("instance %q not configured; run `glute auth%s` first", instance, instanceHint(instance))
 	}
 	if len(cfg.Products) == 0 {
-		return fmt.Errorf("no products configured; add a [[product]] block to %s", config.Path())
+		return fmt.Errorf("no products configured for %q; add a [[product]] block to %s", instance, config.Path(instance))
 	}
 
 	client, err := gitlab.NewClient(cfg.GitLabURL, token, cfg.CACert)

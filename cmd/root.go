@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/MarcelInTO/glute/internal/auth"
@@ -12,7 +13,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var dashboardSample bool
+var (
+	instanceFlag    string
+	dashboardSample bool
+)
 
 var rootCmd = &cobra.Command{
 	Use:   "glute",
@@ -21,7 +25,10 @@ var rootCmd = &cobra.Command{
 across a configured watchlist of "products" (sets of GitLab groups and repos).
 
 Run "glute auth" to connect to your GitLab instance, then run "glute" to launch
-the dashboard. Use --sample to explore the UI with built-in fixture data.`,
+the dashboard. Use --sample to explore the UI with built-in fixture data.
+
+Multiple GitLab servers can be kept as named instances via --instance/-i (or the
+GLUTE_INSTANCE environment variable); each has its own config, token, and log.`,
 	// RunE errors are printed by cobra; don't also dump usage on them.
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -30,7 +37,10 @@ the dashboard. Use --sample to explore the UI with built-in fixture data.`,
 }
 
 func init() {
-	rootCmd.Flags().BoolVar(&dashboardSample, "sample", false, "run the dashboard against built-in sample data (no GitLab needed)")
+	rootCmd.PersistentFlags().StringVarP(&instanceFlag, "instance", "i", "",
+		`instance profile name (default: $GLUTE_INSTANCE or "default")`)
+	rootCmd.Flags().BoolVar(&dashboardSample, "sample", false,
+		"run the dashboard against built-in sample data (no GitLab needed)")
 }
 
 // Execute runs the root command; it is the single entry point from main.
@@ -41,7 +51,11 @@ func Execute() {
 }
 
 func runDashboard() error {
-	cfg, err := config.Load()
+	instance, err := config.ResolveInstance(instanceFlag)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(instance)
 	if err != nil {
 		return err
 	}
@@ -54,17 +68,17 @@ func runDashboard() error {
 		svc = gitlab.FakeService{Snap: gitlab.SampleSnapshot()}
 		title = "sample data"
 	} else {
-		token, err := auth.LoadToken()
+		token, err := auth.LoadToken(instance)
 		if err != nil {
 			return err
 		}
 		if cfg.GitLabURL == "" || token == "" {
-			fmt.Println("glute isn't connected yet. Run `glute auth` to set up access to your GitLab instance.")
+			fmt.Printf("Instance %q isn't connected yet. Run `glute auth%s` to set it up.\n", instance, instanceHint(instance))
 			return nil
 		}
 		if len(cfg.Products) == 0 {
-			fmt.Printf("No products configured yet. Add a [[product]] block to %s (see the comments there),\n"+
-				"or explore the UI now with: glute --sample\n", config.Path())
+			fmt.Printf("No products configured for %q. Add a [[product]] block to %s (see the comments there),\n"+
+				"or explore the UI now with: glute --sample\n", instance, config.Path(instance))
 			return nil
 		}
 		client, err := gitlab.NewClient(cfg.GitLabURL, token, cfg.CACert)
@@ -75,12 +89,13 @@ func runDashboard() error {
 			RecentWindow: time.Duration(cfg.RecentWindow),
 			TopWindow:    time.Duration(cfg.TopWindow),
 		})
-		title = cfg.GitLabURL
+		title = instanceTitle(instance, cfg.GitLabURL)
 	}
 
 	return ui.NewDashboard(svc, ui.Options{
 		RefreshInterval: time.Duration(cfg.RefreshInterval),
 		Title:           title,
+		LogPath:         logPath(instance),
 	}).Run()
 }
 
@@ -91,4 +106,30 @@ func productSpecs(cfg config.Config) []gitlab.ProductSpec {
 		specs = append(specs, gitlab.ProductSpec{Name: p.Name, Groups: p.Groups, Projects: p.Projects})
 	}
 	return specs
+}
+
+// instanceHint returns " --instance <name>" for non-default instances, so
+// suggested commands carry the right instance.
+func instanceHint(instance string) string {
+	if instance == config.DefaultInstance {
+		return ""
+	}
+	return " --instance " + instance
+}
+
+// instanceTitle labels the footer with the instance (unless it's the default).
+func instanceTitle(instance, url string) string {
+	if instance == config.DefaultInstance {
+		return url
+	}
+	return instance + " · " + url
+}
+
+// logPath is the per-instance log file; falls back to a bare name on error.
+func logPath(instance string) string {
+	dir, err := config.InstanceDir(instance)
+	if err != nil {
+		return "glute.log"
+	}
+	return filepath.Join(dir, "glute.log")
 }

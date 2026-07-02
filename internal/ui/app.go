@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MarcelInTO/glute/internal/config"
 	"github.com/MarcelInTO/glute/internal/format"
 	"github.com/MarcelInTO/glute/internal/gitlab"
 	"github.com/gdamore/tcell/v2"
@@ -37,7 +36,8 @@ const helpText = `glute — keys
 // Options configures a Dashboard.
 type Options struct {
 	RefreshInterval time.Duration
-	Title           string // shown in the footer, e.g. the instance URL
+	Title           string // shown in the footer, e.g. "<instance> · <url>"
+	LogPath         string // file the standard logger is redirected to
 }
 
 // Dashboard is the top-level TUI application.
@@ -122,7 +122,7 @@ func NewDashboard(svc gitlab.Service, opts Options) *Dashboard {
 // Run starts the background refresh loop and blocks on the UI event loop until
 // the user quits.
 func (d *Dashboard) Run() error {
-	if f, err := setupLogging(); err != nil {
+	if f, err := setupLogging(d.opts.LogPath); err != nil {
 		log.SetOutput(io.Discard) // never let log noise corrupt the screen
 	} else {
 		defer f.Close()
@@ -302,17 +302,16 @@ func (d *Dashboard) updateFooter() {
 	d.footer.SetText(fmt.Sprintf(" %s%s%s    [silver]Tab switch · r refresh · ? help · q quit[-]", status, trailer, title))
 }
 
-// setupLogging points the standard logger at a file in the config dir, since a
-// TUI owns the screen and can't safely write to stdout/stderr.
-func setupLogging() (*os.File, error) {
-	dir, err := config.Dir()
-	if err != nil {
+// setupLogging points the standard logger at the given file, since a TUI owns
+// the screen and can't safely write to stdout/stderr.
+func setupLogging(path string) (*os.File, error) {
+	if path == "" {
+		return nil, fmt.Errorf("no log path configured")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(filepath.Join(dir, "glute.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}

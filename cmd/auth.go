@@ -22,7 +22,9 @@ validates it against your instance, and stores it in a 0600 file.
 
 The token can also be supplied at runtime via the GLUTE_TOKEN environment
 variable, which takes precedence over the stored file (handy on headless or
-CI hosts where no OS keychain is available).`,
+CI hosts where no OS keychain is available).
+
+Use --instance/-i to set up a second GitLab server under its own profile.`,
 	RunE: runAuthLogin,
 }
 
@@ -45,10 +47,16 @@ func init() {
 }
 
 func runAuthLogin(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load()
+	instance, err := config.ResolveInstance(instanceFlag)
 	if err != nil {
 		return err
 	}
+	cfg, err := config.Load(instance)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Instance: %s\n", instance)
 
 	url := firstNonEmpty(authURL, cfg.GitLabURL)
 	if url == "" {
@@ -85,38 +93,43 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 	fmt.Printf("ok — authenticated as %s\n", username)
 
 	cfg.GitLabURL = url
-	if err := config.Save(cfg); err != nil {
+	if err := config.Save(instance, cfg); err != nil {
 		return err
 	}
-	if err := auth.StoreToken(token); err != nil {
+	if err := auth.StoreToken(instance, token); err != nil {
 		return err
 	}
 
-	fmt.Printf("\nSaved.\n  config: %s\n  token:  %s (0600)\n", config.Path(), auth.TokenPath())
+	fmt.Printf("\nSaved.\n  config: %s\n  token:  %s (0600)\n", config.Path(instance), auth.TokenPath(instance))
 	return nil
 }
 
 func runAuthStatus(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load()
+	instance, err := config.ResolveInstance(instanceFlag)
 	if err != nil {
 		return err
 	}
-	token, err := auth.LoadToken()
+	cfg, err := config.Load(instance)
+	if err != nil {
+		return err
+	}
+	token, err := auth.LoadToken(instance)
 	if err != nil {
 		return err
 	}
 
+	fmt.Printf("Instance: %s\n", instance)
 	if cfg.GitLabURL == "" {
-		fmt.Println("Not configured yet. Run `glute auth` to get started.")
+		fmt.Printf("Not configured yet. Run `glute auth%s` to get started.\n", instanceHint(instance))
 		return nil
 	}
-	fmt.Printf("Instance: %s\n", cfg.GitLabURL)
+	fmt.Printf("URL:      %s\n", cfg.GitLabURL)
 
 	if token == "" {
-		fmt.Println("Token:    none — run `glute auth`")
+		fmt.Printf("Token:    none — run `glute auth%s`\n", instanceHint(instance))
 		return nil
 	}
-	fmt.Printf("Token:    present (from %s)\n", auth.Source())
+	fmt.Printf("Token:    present (from %s)\n", auth.Source(instance))
 
 	fmt.Print("Checking... ")
 	client, err := gitlab.NewClient(cfg.GitLabURL, token, cfg.CACert)
@@ -134,10 +147,14 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 }
 
 func runAuthLogout(cmd *cobra.Command, args []string) error {
-	if err := auth.DeleteToken(); err != nil {
+	instance, err := config.ResolveInstance(instanceFlag)
+	if err != nil {
 		return err
 	}
-	fmt.Println("Removed the stored token. (Config is left intact.)")
+	if err := auth.DeleteToken(instance); err != nil {
+		return err
+	}
+	fmt.Printf("Removed the stored token for %q. (Config is left intact.)\n", instance)
 	if strings.TrimSpace(os.Getenv("GLUTE_TOKEN")) != "" {
 		fmt.Println("Note: GLUTE_TOKEN is still set in your environment and will still be used.")
 	}
