@@ -55,10 +55,27 @@ func TestDashboardRendersPipelinesTab(t *testing.T) {
 	out := renderToText(t, d, 130, 32)
 	t.Logf("Pipelines tab:\n%s", out)
 
-	for _, want := range []string{"glute", "Pipelines", "Jobs", "Running pipelines", "acme/payments/api", "success", "RUNS", "updated"} {
+	for _, want := range []string{"glute", "Pipelines", "Jobs", "Running pipelines", "gateway", "success", "RUNS", "updated"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("pipelines render missing %q", want)
 		}
+	}
+	// Project cells show only the last path segment, not the full path.
+	if strings.Contains(out, "acme/payments/api") {
+		t.Errorf("project column should be truncated to the last segment, found the full path")
+	}
+}
+
+func TestHoverRevealsFullPath(t *testing.T) {
+	d := newSampleDashboard()
+	_ = renderToText(t, d, 130, 32) // draw once so GetInnerRect is populated
+
+	ix, iy, _, _ := d.pipelines.running.table.GetInnerRect()
+	if path, ok := d.pipelines.hoverPathAt(ix+1, iy+1); !ok || path != "acme/payments/api" {
+		t.Fatalf("hover over first running row = (%q, %v), want acme/payments/api", path, ok)
+	}
+	if _, ok := d.pipelines.hoverPathAt(ix+1, iy); ok {
+		t.Errorf("hover over the header row should reveal nothing")
 	}
 }
 

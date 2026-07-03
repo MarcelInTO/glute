@@ -13,22 +13,22 @@ import (
 // split between "recent" and "top".
 type pipelineView struct {
 	root    *tview.Flex
-	running *tview.Table
-	recent  *tview.Table
-	top     *tview.Table
+	running *panelTable
+	recent  *panelTable
+	top     *panelTable
 }
 
 func newPipelineView() *pipelineView {
-	running := newTable("Running pipelines")
-	recent := newTable("Recent · failures & successes")
-	top := newTable("Top pipelines · avg length")
+	running := newPanelTable("Running pipelines")
+	recent := newPanelTable("Recent · failures & successes")
+	top := newPanelTable("Top pipelines · avg length")
 
 	bottom := tview.NewFlex().SetDirection(tview.FlexColumn)
-	bottom.AddItem(recent, 0, 1, false)
-	bottom.AddItem(top, 0, 1, false)
+	bottom.AddItem(recent.table, 0, 1, false)
+	bottom.AddItem(top.table, 0, 1, false)
 
 	root := tview.NewFlex().SetDirection(tview.FlexRow)
-	root.AddItem(running, 0, 1, false)
+	root.AddItem(running.table, 0, 1, false)
 	root.AddItem(bottom, 0, 1, false)
 
 	return &pipelineView{root: root, running: running, recent: recent, top: top}
@@ -40,49 +40,63 @@ func (v *pipelineView) update(s gitlab.Snapshot) {
 	fillTopPipelines(v.top, s.TopPipelines)
 }
 
-func fillRunningPipelines(t *tview.Table, pipes []gitlab.Pipeline) {
-	setHeader(t, "PROJECT", "REF", "STATUS", "ELAPSED")
+// hoverPathAt returns the full project path under (x, y) across this tab's
+// panels, if any.
+func (v *pipelineView) hoverPathAt(x, y int) (string, bool) {
+	for _, p := range []*panelTable{v.running, v.recent, v.top} {
+		if path, ok := p.hoverAt(x, y); ok {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+func fillRunningPipelines(p *panelTable, pipes []gitlab.Pipeline) {
+	p.reset("PROJECT", "REF", "STATUS", "ELAPSED")
 	if len(pipes) == 0 {
-		emptyRow(t, 4)
+		emptyRow(p.table, 4)
 		return
 	}
-	for i, p := range pipes {
+	for i, pipe := range pipes {
 		r := i + 1
-		t.SetCell(r, 0, textCell(format.Trunc(p.ProjectPath, 34)))
-		t.SetCell(r, 1, textCell(format.Trunc(p.Ref, 22)))
-		t.SetCell(r, 2, statusCell(p.Status))
-		t.SetCell(r, 3, numCell(format.Elapsed(p.Started, p.Created)))
+		p.addPath(pipe.ProjectPath)
+		p.table.SetCell(r, 0, textCell(format.Trunc(format.Base(pipe.ProjectPath), 28)))
+		p.table.SetCell(r, 1, textCell(format.Trunc(pipe.Ref, 22)))
+		p.table.SetCell(r, 2, statusCell(pipe.Status))
+		p.table.SetCell(r, 3, numCell(format.Elapsed(pipe.Started, pipe.Created)))
 	}
 }
 
-func fillRecentPipelines(t *tview.Table, pipes []gitlab.Pipeline) {
-	setHeader(t, "PROJECT", "REF", "STATUS", "DURATION", "WHEN")
+func fillRecentPipelines(p *panelTable, pipes []gitlab.Pipeline) {
+	p.reset("PROJECT", "REF", "STATUS", "DURATION", "WHEN")
 	if len(pipes) == 0 {
-		emptyRow(t, 5)
+		emptyRow(p.table, 5)
 		return
 	}
-	for i, p := range pipes {
+	for i, pipe := range pipes {
 		r := i + 1
-		t.SetCell(r, 0, textCell(format.Trunc(p.ProjectPath, 24)))
-		t.SetCell(r, 1, textCell(format.Trunc(p.Ref, 15)))
-		t.SetCell(r, 2, statusCell(p.Status))
-		t.SetCell(r, 3, numCell(format.Duration(p.Duration)))
-		t.SetCell(r, 4, numCell(format.Ago(p.Finished)))
+		p.addPath(pipe.ProjectPath)
+		p.table.SetCell(r, 0, textCell(format.Trunc(format.Base(pipe.ProjectPath), 18)))
+		p.table.SetCell(r, 1, textCell(format.Trunc(pipe.Ref, 15)))
+		p.table.SetCell(r, 2, statusCell(pipe.Status))
+		p.table.SetCell(r, 3, numCell(format.Duration(pipe.Duration)))
+		p.table.SetCell(r, 4, numCell(format.Ago(pipe.Finished)))
 	}
 }
 
-func fillTopPipelines(t *tview.Table, aggs []gitlab.PipelineAgg) {
-	setHeader(t, "PROJECT", "REF", "RUNS", "AVG", "SUCCESS")
+func fillTopPipelines(p *panelTable, aggs []gitlab.PipelineAgg) {
+	p.reset("PROJECT", "REF", "RUNS", "AVG", "SUCCESS")
 	if len(aggs) == 0 {
-		emptyRow(t, 5)
+		emptyRow(p.table, 5)
 		return
 	}
 	for i, a := range aggs {
 		r := i + 1
-		t.SetCell(r, 0, textCell(format.Trunc(a.ProjectPath, 26)))
-		t.SetCell(r, 1, textCell(format.Trunc(a.Ref, 16)))
-		t.SetCell(r, 2, numCell(strconv.Itoa(a.Count)))
-		t.SetCell(r, 3, numCell(format.Duration(a.AvgDuration)))
-		t.SetCell(r, 4, numCell(fmt.Sprintf("%.0f%%", a.SuccessRate()*100)))
+		p.addPath(a.ProjectPath)
+		p.table.SetCell(r, 0, textCell(format.Trunc(format.Base(a.ProjectPath), 18)))
+		p.table.SetCell(r, 1, textCell(format.Trunc(a.Ref, 15)))
+		p.table.SetCell(r, 2, numCell(strconv.Itoa(a.Count)))
+		p.table.SetCell(r, 3, numCell(format.Duration(a.AvgDuration)))
+		p.table.SetCell(r, 4, numCell(fmt.Sprintf("%.0f%%", a.SuccessRate()*100)))
 	}
 }

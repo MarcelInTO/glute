@@ -3,6 +3,7 @@ package format
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -50,4 +51,13 @@ func Trunc(s string, n int) string {
 		return string(r[:n])
 	}
 	return string(r[:n-1]) + "…"
+}
+
+// Base returns the last segment of a slash-separated path (e.g. "org/team/repo"
+// -> "repo"); paths without a slash are returned unchanged.
+func Base(p string) string {
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		return p[i+1:]
+	}
+	return p
 }

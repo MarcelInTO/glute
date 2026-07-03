@@ -63,6 +63,7 @@ type Dashboard struct {
 	snapshot   gitlab.Snapshot
 	lastErr    error
 	refreshing bool
+	hoverPath  string // full project path under the mouse, shown in the footer
 }
 
 // NewDashboard builds (but does not start) the dashboard.
@@ -114,6 +115,7 @@ func NewDashboard(svc gitlab.Service, opts Options) *Dashboard {
 
 	help.SetDoneFunc(func(int, string) { d.hideHelp() })
 	d.app.SetInputCapture(d.onKey)
+	d.app.SetMouseCapture(d.onMouse)
 	d.app.SetRoot(outer, true)
 	d.app.EnableMouse(true)
 	return d
@@ -208,6 +210,40 @@ func (d *Dashboard) hideHelp() {
 	d.app.SetFocus(d.pages)
 }
 
+// onMouse reveals the full project path of the row under the cursor in the
+// footer. tview has no native tooltip, so this is the conventional
+// hover-detail; it follows the mouse where the terminal reports motion and
+// otherwise updates on click.
+func (d *Dashboard) onMouse(event *tcell.EventMouse, action tview.MouseAction) (*tcell.EventMouse, tview.MouseAction) {
+	if event == nil {
+		return event, action
+	}
+	if name, _ := d.outer.GetFrontPage(); name == pageHelp {
+		return event, action // don't chase the mouse under the help overlay
+	}
+
+	hover := ""
+	x, y := event.Position()
+	if path, ok := d.hoverPathAt(x, y); ok {
+		hover = path
+	}
+	if hover != d.hoverPath {
+		d.hoverPath = hover
+		d.updateFooter()
+	}
+	return event, action
+}
+
+func (d *Dashboard) hoverPathAt(x, y int) (string, bool) {
+	switch d.active {
+	case 0:
+		return d.pipelines.hoverPathAt(x, y)
+	case 1:
+		return d.jobs.hoverPathAt(x, y)
+	}
+	return "", false
+}
+
 func (d *Dashboard) triggerRefresh() {
 	select {
 	case d.trigger <- struct{}{}:
@@ -276,6 +312,14 @@ func (d *Dashboard) updateHeader() {
 }
 
 func (d *Dashboard) updateFooter() {
+	const hints = "[silver]Tab switch · r refresh · ? help · q quit[-]"
+
+	// While hovering a row, reveal that project's full path.
+	if d.hoverPath != "" {
+		d.footer.SetText(fmt.Sprintf(" [aqua]%s[-]    %s", tview.Escape(d.hoverPath), hints))
+		return
+	}
+
 	var status string
 	switch {
 	case d.refreshing:
@@ -299,7 +343,7 @@ func (d *Dashboard) updateFooter() {
 		title = "  [silver]" + format.Trunc(d.opts.Title, 40) + "[-]"
 	}
 
-	d.footer.SetText(fmt.Sprintf(" %s%s%s    [silver]Tab switch · r refresh · ? help · q quit[-]", status, trailer, title))
+	d.footer.SetText(fmt.Sprintf(" %s%s%s    %s", status, trailer, title, hints))
 }
 
 // setupLogging points the standard logger at the given file, since a TUI owns
