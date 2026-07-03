@@ -73,6 +73,8 @@ func SampleSnapshot() Snapshot {
 			ProjectPath: "acme/payments/api", Ref: "main", PipelineID: 101, Started: now.Add(-70 * time.Second)},
 		{ID: 5102, Name: "build", Stage: "build", Status: StatusRunning,
 			ProjectPath: "acme/payments/web", Ref: "release/2.1", PipelineID: 102, Started: now.Add(-4 * time.Minute)},
+		{ID: 5103, Name: "deploy-prod", Stage: "deploy", Status: StatusPending,
+			ProjectPath: "acme/platform/gateway", Ref: "main", PipelineID: 103, Created: now.Add(-15 * time.Second)},
 	}
 
 	recentJob := []Job{

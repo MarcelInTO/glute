@@ -1,6 +1,7 @@
 package gitlab
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -79,6 +80,27 @@ func TestRunningAndRecentPipelines(t *testing.T) {
 	// Newest-finished first: pipeline 3 (-90m) before pipeline 2 (-2h).
 	if recent[0].ID != 3 || recent[1].ID != 2 {
 		t.Errorf("recent order: want [3 2], got [%d %d]", recent[0].ID, recent[1].ID)
+	}
+}
+
+func TestJobFetchScopesIncludeQueued(t *testing.T) {
+	for _, s := range []Status{StatusCreated, StatusPending, StatusRunning, StatusSuccess, StatusFailed} {
+		if !slices.Contains(jobFetchScopes, s) {
+			t.Errorf("jobFetchScopes missing %s (Running panel needs queued jobs fetched)", s)
+		}
+	}
+}
+
+func TestRunningJobsIncludesPending(t *testing.T) {
+	now := time.Now()
+	jobs := []Job{
+		{ID: 1, Status: StatusRunning, Started: now.Add(-time.Minute)},
+		{ID: 2, Status: StatusPending, Created: now.Add(-30 * time.Second)},
+		{ID: 3, Status: StatusCreated, Created: now.Add(-10 * time.Second)},
+		{ID: 4, Status: StatusSuccess, Finished: now.Add(-time.Minute)},
+	}
+	if got := runningJobs(jobs); len(got) != 3 {
+		t.Fatalf("running jobs should include running+pending+created (3), got %d", len(got))
 	}
 }
 

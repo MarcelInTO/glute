@@ -130,6 +130,17 @@ func (p *Poller) fetchAll(ctx context.Context, projects []Project, topSince time
 	return allPipes, allJobs, errs
 }
 
+// jobFetchScopes lists the job statuses glute pulls per project: the not-yet-
+// finished states (created, pending, running) so the Running panel includes
+// queued work, plus success and failed for the Recent and Top panels.
+var jobFetchScopes = []Status{
+	StatusCreated,
+	StatusPending,
+	StatusRunning,
+	StatusSuccess,
+	StatusFailed,
+}
+
 // fetchProject fetches one project's pipelines and jobs, tagging each with the
 // project path. A failure in one call doesn't discard the other's data.
 func (p *Poller) fetchProject(ctx context.Context, proj Project, topSince time.Time) ([]Pipeline, []Job, error) {
@@ -143,7 +154,7 @@ func (p *Poller) fetchProject(ctx context.Context, proj Project, topSince time.T
 		pipes[i].ProjectPath = proj.Path
 	}
 
-	jobs, err := p.client.ListJobs(ctx, proj.ID, []Status{StatusRunning, StatusSuccess, StatusFailed}, topSince)
+	jobs, err := p.client.ListJobs(ctx, proj.ID, jobFetchScopes, topSince)
 	if err != nil {
 		errList = append(errList, err)
 	}
