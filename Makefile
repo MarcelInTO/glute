@@ -23,6 +23,13 @@ GOBUILD := CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)'
 # Add e.g. darwin/amd64 (Intel Macs) or linux/arm64 (ARM servers) as needed.
 PLATFORMS := linux/amd64 darwin/arm64 windows/amd64
 
+# Claude Code keeps this project's memory under a per-project dir in $HOME.
+# We store the real files in-repo (so they sync via git) and symlink the
+# $HOME location to them — see the `memory-link` target. Claude derives the
+# per-project dir name from the cwd by replacing '/' and '.' with '-'.
+MEMORY_SRC  := $(CURDIR)/.claude/memory
+MEMORY_LINK := $(HOME)/.claude/projects/$(subst .,-,$(subst /,-,$(CURDIR)))/memory
+
 .DEFAULT_GOAL := all
 
 .PHONY: all
@@ -65,6 +72,21 @@ tidy: ## Tidy go.mod / go.sum
 .PHONY: clean
 clean: ## Remove bin/
 	rm -rf $(BIN_DIR)
+
+.PHONY: memory-link
+memory-link: ## Symlink Claude's per-project memory dir to .claude/memory (run on each machine)
+	@if [ ! -d "$(MEMORY_SRC)" ]; then \
+		echo "error: $(MEMORY_SRC) not found (is this the repo root?)"; exit 1; \
+	fi
+	@if [ -L "$(MEMORY_LINK)" ]; then \
+		rm "$(MEMORY_LINK)"; \
+	elif [ -e "$(MEMORY_LINK)" ]; then \
+		echo "error: $(MEMORY_LINK) exists and is not a symlink;"; \
+		echo "       merge its contents into $(MEMORY_SRC), remove it, then re-run"; exit 1; \
+	fi
+	@mkdir -p "$(dir $(MEMORY_LINK))"
+	@ln -s "$(MEMORY_SRC)" "$(MEMORY_LINK)"
+	@echo "  linked $(MEMORY_LINK) -> $(MEMORY_SRC)"
 
 .PHONY: help
 help: ## List targets
