@@ -16,9 +16,9 @@ import (
 	glab "gitlab.com/gitlab-org/api/client-go"
 )
 
-// maxJobPages bounds the jobs pagination per project. The jobs endpoint has no
-// time filter, so we page newest-first and stop early once past the window;
-// this is a backstop against a runaway on unexpectedly busy projects.
+// maxJobPages bounds the project-wide jobs pagination used for the bulk backfill.
+// That endpoint has no time filter, so we page newest-first and stop once past
+// the window; this is a backstop against a runaway on unexpectedly busy projects.
 const maxJobPages = 50
 
 // Client is glute's handle to a GitLab instance.
@@ -133,18 +133,13 @@ func (c *Client) GetPipeline(ctx context.Context, projectID, pipelineID int64) (
 	return mapPipelineDetail(projectID, p), nil
 }
 
-// ListJobs returns jobs for a project matching the given scopes, back to since.
-// The jobs endpoint carries durations directly, so no per-job enrichment is
-// needed.
+// ListJobs returns a project's jobs matching the given scopes, back to since,
+// newest-first. It's the bulk backfill used for the full-window fetch: the
+// project-wide endpoint includes child-pipeline jobs and pages efficiently
+// (~one page per project on a typical instance), so it's far cheaper than
+// walking every pipeline. The jobs endpoint carries durations directly.
 func (c *Client) ListJobs(ctx context.Context, projectID int64, scopes []Status, since time.Time) ([]Job, error) {
-	scopeVals := make([]glab.BuildStateValue, 0, len(scopes))
-	for _, s := range scopes {
-		scopeVals = append(scopeVals, glab.BuildStateValue(s))
-	}
-	opt := &glab.ListJobsOptions{}
-	if len(scopeVals) > 0 {
-		opt.Scope = &scopeVals
-	}
+	opt := &glab.ListJobsOptions{Scope: scopeValues(scopes)}
 	opt.PerPage = 100
 	opt.Page = 1
 
@@ -165,6 +160,74 @@ func (c *Client) ListJobs(ctx context.Context, projectID int64, scopes []Status,
 		}
 		// Jobs come newest-first, so once a page dips below the window we're done.
 		if resp.NextPage == 0 || pastWindow {
+			break
+		}
+		opt.Page = resp.NextPage
+	}
+	return out, nil
+}
+
+// ListPipelineJobs returns the jobs of a single pipeline matching the given
+// scopes. glute uses this on the warm path — for the few pipelines that are
+// active or recently changed — so a live refresh needn't re-page a project's
+// whole job history; a job's state changes only as part of its pipeline's.
+func (c *Client) ListPipelineJobs(ctx context.Context, projectID, pipelineID int64, scopes []Status) ([]Job, error) {
+	opt := &glab.ListJobsOptions{Scope: scopeValues(scopes)}
+	opt.PerPage = 100
+	opt.Page = 1
+
+	var out []Job
+	for {
+		jobs, resp, err := c.api.Jobs.ListPipelineJobs(projectID, pipelineID, opt, glab.WithContext(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("listing jobs for pipeline %d of project %d: %w", pipelineID, projectID, err)
+		}
+		for _, j := range jobs {
+			out = append(out, mapJob(j))
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opt.Page = resp.NextPage
+	}
+	return out, nil
+}
+
+// scopeValues converts glute Statuses to the upstream scope filter, or nil (all
+// scopes) when none are given.
+func scopeValues(scopes []Status) *[]glab.BuildStateValue {
+	if len(scopes) == 0 {
+		return nil
+	}
+	vals := make([]glab.BuildStateValue, 0, len(scopes))
+	for _, s := range scopes {
+		vals = append(vals, glab.BuildStateValue(s))
+	}
+	return &vals
+}
+
+// ListDownstreamPipelines returns the child pipelines a pipeline triggers, read
+// from its bridge (trigger) jobs. Dynamically-generated child pipelines don't
+// appear in the project pipeline list, and the parent's own job list holds only
+// the bridge job — so this is the only way to reach a child's jobs. Bridges
+// without a downstream (e.g. not-yet-created) are skipped.
+func (c *Client) ListDownstreamPipelines(ctx context.Context, projectID, pipelineID int64) ([]Pipeline, error) {
+	opt := &glab.ListJobsOptions{}
+	opt.PerPage = 100
+	opt.Page = 1
+
+	var out []Pipeline
+	for {
+		bridges, resp, err := c.api.Jobs.ListPipelineBridges(projectID, pipelineID, opt, glab.WithContext(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("listing bridges for pipeline %d of project %d: %w", pipelineID, projectID, err)
+		}
+		for _, b := range bridges {
+			if b.DownstreamPipeline != nil {
+				out = append(out, mapPipelineInfo(b.DownstreamPipeline))
+			}
+		}
+		if resp.NextPage == 0 {
 			break
 		}
 		opt.Page = resp.NextPage

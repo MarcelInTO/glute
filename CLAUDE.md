@@ -35,24 +35,48 @@ stays trivial.
   named instances get a subdirectory. Zero migration — an existing
   single-instance setup keeps working as `default`.
 - **Data layer = one `Service.Refresh(ctx) → Snapshot`** that feeds all six
-  panels from a single fetch pass, so the UI never shows a half-loaded state.
-  The UI depends on the `Service` interface (fake + `SampleSnapshot` for tests).
-- **Deliberately deferred (small instance — don't pre-optimize):** the
-  group→project resolver re-resolves every refresh and there is no persistent
-  cache. Add caching/activity-trimming only when a real instance demands it.
+  panels, so the UI never shows a half-loaded state. The UI depends on the
+  `Service` interface (fake + `SampleSnapshot` for tests).
+- **Incremental retained store (the `Poller`), not a full fetch per refresh.**
+  The Poller keeps an in-memory store of the pipelines and jobs within the Top
+  window and updates it incrementally: each refresh fetches only pipelines
+  changed since the last (`updated_after` + a small overlap) and the jobs of the
+  few pipelines that are active or just changed; terminal pipelines/jobs are
+  immutable, learned once and kept until they age out. A periodic full re-list
+  (`ResyncInterval`, default 10m) reconciles drift; the group→project resolve is
+  cached (`ResolveTTL`, default 10m). This took a real 42-project instance from
+  ~9.4s of fetching every refresh to <1s warm (see the `RefreshStats` exit
+  summary and the per-refresh `refresh timing:` log line). Snapshots are still
+  built by the pure aggregate functions over the whole store, so the UI is
+  unchanged. `--sample`/`refresh` build a fresh Poller (cold path) each run.
 
 ## GitLab API notes
 
 - The pipeline **list** endpoint omits `duration` — computing "avg length"
-  needs a per-pipeline **detail** fetch. Finished pipelines are cached in the
-  poller (their duration is immutable); this is the expensive call.
-- The **jobs** list endpoint *does* include duration (cheaper).
-- The jobs endpoint has **no time filter**; the client paginates newest-first
-  and stops once past the window.
-- The Running panels include pending/queued work via `Status.IsActive()`. Jobs
-  must therefore be fetched with `created`/`pending` scopes (see
-  `jobFetchScopes`), not just `running`, or pending jobs never appear.
-  Pipelines are fetched without a status filter, so they already include them.
+  needs a per-pipeline **detail** fetch. The retained store keeps the immutable
+  durations of finished pipelines, so enrichment only ever fetches details for
+  newly-changed pipelines (cheap once warm; measured ~0s on an idle instance).
+- The pipeline list supports `updated_after` and orders by `updated_at desc`, so
+  the incremental delta = "pipelines whose status changed since last refresh."
+- **Jobs use two paths.** The full-window backfill (cold start + periodic
+  resync) uses the project-wide jobs list (`ListJobs`): it's cheap (~1 page per
+  project) and — crucially — *includes child-pipeline jobs*. The warm delta
+  fetches jobs per pipeline (`ListPipelineJobs`) for only the active/changed
+  pipelines, since a job's state changes only as part of its pipeline's — that's
+  what keeps warm refreshes off the multi-second project-wide sweep. Both paths
+  share `jobFetchScopes` so the panels are consistent. The jobs endpoint carries
+  `duration` directly (no per-job enrichment).
+- **Child pipelines** (dynamically-generated, `source=parent_pipeline`) do NOT
+  appear in the project pipeline list, and a parent's own jobs are just the
+  bridge/trigger job. So on the warm path we follow each pipeline's *bridges*
+  (`ListDownstreamPipelines`) into its child pipelines and fetch their jobs too,
+  recursively. Children stay out of the pipeline aggregate store (counting them
+  would double the parent's ref in Top Pipelines); only their jobs surface. A
+  root is marked job-complete only once its whole subtree is terminal, so a
+  child that outlives its parent (fire-and-forget trigger) keeps being polled.
+  On the bulk path children come for free (project-wide `/jobs` already lists
+  them). This was a real regression when jobs first moved to per-pipeline —
+  keep it covered.
 
 ## TUI notes
 

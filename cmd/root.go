@@ -61,8 +61,9 @@ func runDashboard() error {
 	}
 
 	var (
-		svc   gitlab.Service
-		title string
+		svc    gitlab.Service
+		poller *gitlab.Poller
+		title  string
 	)
 	if dashboardSample {
 		svc = gitlab.FakeService{Snap: gitlab.SampleSnapshot()}
@@ -85,18 +86,40 @@ func runDashboard() error {
 		if err != nil {
 			return err
 		}
-		svc = gitlab.NewPoller(client, productSpecs(cfg), gitlab.PollOptions{
+		poller = gitlab.NewPoller(client, productSpecs(cfg), gitlab.PollOptions{
 			RecentWindow: time.Duration(cfg.RecentWindow),
 			TopWindow:    time.Duration(cfg.TopWindow),
 		})
+		svc = poller
 		title = instanceTitle(instance, cfg.GitLabURL)
 	}
 
-	return ui.NewDashboard(svc, ui.Options{
+	err = ui.NewDashboard(svc, ui.Options{
 		RefreshInterval: time.Duration(cfg.RefreshInterval),
 		Title:           title,
 		LogPath:         logPath(instance),
 	}).Run()
+
+	// The TUI has torn down and restored the terminal by the time Run returns,
+	// so it's safe to print the refresh-timing summary to stderr here.
+	if poller != nil {
+		printRefreshStats(poller.RefreshStats())
+	}
+	return err
+}
+
+// printRefreshStats writes the average per-phase refresh cost to stderr on exit.
+// Diagnostic instrumentation to inform a caching design: it contrasts the group
+// scan (project resolution, re-run every refresh) against the pipeline/job fetch.
+func printRefreshStats(s gitlab.RefreshStats) {
+	if s.Count == 0 {
+		return
+	}
+	ms := func(d time.Duration) time.Duration { return d.Round(time.Millisecond) }
+	fmt.Fprintf(os.Stderr, "\nrefresh timing (avg over %d refresh(es)):\n", s.Count)
+	fmt.Fprintf(os.Stderr, "  group scan (resolve projects): %s\n", ms(s.AvgResolve()))
+	fmt.Fprintf(os.Stderr, "  pipeline + job fetch:          %s  (list %s + detail-enrich %s)\n",
+		ms(s.AvgFetch()+s.AvgEnrich()), ms(s.AvgFetch()), ms(s.AvgEnrich()))
 }
 
 // productSpecs maps the config's products to the data layer's spec type.

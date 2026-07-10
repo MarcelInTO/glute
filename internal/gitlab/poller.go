@@ -2,12 +2,25 @@ package gitlab
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"time"
 )
+
+// pipeWatermarkOverlap is subtracted from the pipeline-delta watermark on each
+// incremental refresh, so a pipeline whose updated_at lands near the boundary
+// (or under client/server clock skew) is still re-fetched. Re-fetching a few
+// already-known pipelines is cheap (the upsert is idempotent and finished ones
+// skip the detail call), so the margin is generous.
+const pipeWatermarkOverlap = 5 * time.Minute
+
+// sourceParentPipeline is the GitLab pipeline `source` for a dynamically-created
+// child pipeline. Such pipelines are reached only via their parent's bridges
+// (they don't appear in the project pipeline list), so they're kept out of the
+// aggregate store and would otherwise double-count against their parent's ref.
+const sourceParentPipeline = "parent_pipeline"
 
 // PollOptions tunes a Poller. Zero values fall back to sensible defaults.
 type PollOptions struct {
@@ -16,6 +29,8 @@ type PollOptions struct {
 	TopLimit       int           // max rows in the Top panels
 	Concurrency    int           // max projects/detail-fetches in parallel
 	MaxDetailFetch int           // cap on pipeline-detail calls per refresh
+	ResyncInterval time.Duration // how often to re-list the full window as a reconcile
+	ResolveTTL     time.Duration // how long a resolved project set is reused
 }
 
 func (o PollOptions) withDefaults() PollOptions {
@@ -34,71 +49,415 @@ func (o PollOptions) withDefaults() PollOptions {
 	if o.MaxDetailFetch <= 0 {
 		o.MaxDetailFetch = 1000
 	}
+	if o.ResyncInterval <= 0 {
+		o.ResyncInterval = 10 * time.Minute
+	}
+	if o.ResolveTTL <= 0 {
+		o.ResolveTTL = 10 * time.Minute
+	}
 	return o
 }
 
 // Poller fetches CI data for the configured products and assembles Snapshots.
 // It implements Service.
+//
+// Rather than re-download the whole Top window every refresh, the Poller keeps a
+// retained in-memory store of the pipelines and jobs within that window and
+// updates it incrementally: each refresh fetches only pipelines that changed
+// (via updated_after) and the jobs of the few pipelines that are active or just
+// changed. Terminal pipelines and jobs are immutable, so they're learned once
+// and kept until they age out. A periodic full-window re-list reconciles any
+// drift. See CLAUDE.md for the measurements that motivated this.
 type Poller struct {
 	client *Client
 	specs  []ProductSpec
 	opts   PollOptions
 
-	mu        sync.Mutex
-	pipeCache map[int64]Pipeline // finished-pipeline detail cache (immutable data)
+	// Retained window store and its bookkeeping. Accessed only from Refresh,
+	// which the UI never calls concurrently, so no lock is needed here.
+	pipes         map[int64]Pipeline // Top-window pipelines, keyed by pipeline ID
+	jobs          map[int64]Job      // Top-window jobs, keyed by job ID
+	jobsDone      map[int64]bool     // pipeline IDs whose terminal jobs are fully captured
+	pending       map[int64]bool     // finished root pipelines with a still-active child subtree
+	pipeWatermark time.Time          // start time of the last pipeline fetch
+	lastResync    time.Time          // when the last full-window re-list ran
+
+	cachedProjects []Project // last resolved project set (reused within ResolveTTL)
+	cachedErrs     []error   // resolve warnings paired with cachedProjects
+	lastResolve    time.Time // when the project set was last resolved
+
+	statsMu sync.Mutex
+	stats   RefreshStats // cumulative per-phase timing across refreshes
+}
+
+// RefreshStats reports the cumulative time each Refresh phase has cost across a
+// Poller's lifetime, so the average per-phase cost can be surfaced on exit. This
+// is diagnostic instrumentation to inform caching decisions: the group→project
+// resolve and the data fetch are timed separately.
+type RefreshStats struct {
+	Count   int           // refreshes measured
+	Resolve time.Duration // total group-scan / project-resolution time
+	Fetch   time.Duration // total pipeline+job list-fetch time
+	Enrich  time.Duration // total pipeline-detail (duration) enrichment time
+}
+
+// AvgResolve is the mean group-scan time per refresh (0 if none measured).
+func (s RefreshStats) AvgResolve() time.Duration { return avgDuration(s.Resolve, s.Count) }
+
+// AvgFetch is the mean pipeline+job list-fetch time per refresh.
+func (s RefreshStats) AvgFetch() time.Duration { return avgDuration(s.Fetch, s.Count) }
+
+// AvgEnrich is the mean pipeline-detail enrichment time per refresh.
+func (s RefreshStats) AvgEnrich() time.Duration { return avgDuration(s.Enrich, s.Count) }
+
+func avgDuration(total time.Duration, n int) time.Duration {
+	if n <= 0 {
+		return 0
+	}
+	return total / time.Duration(n)
 }
 
 // NewPoller builds a Poller for the given client and product specs.
 func NewPoller(client *Client, specs []ProductSpec, opts PollOptions) *Poller {
 	return &Poller{
-		client:    client,
-		specs:     specs,
-		opts:      opts.withDefaults(),
-		pipeCache: map[int64]Pipeline{},
+		client:   client,
+		specs:    specs,
+		opts:     opts.withDefaults(),
+		pipes:    map[int64]Pipeline{},
+		jobs:     map[int64]Job{},
+		jobsDone: map[int64]bool{},
+		pending:  map[int64]bool{},
 	}
 }
 
-// Refresh fetches current data and assembles a Snapshot. Per-project failures
-// are folded into Snapshot.Errors rather than aborting the whole refresh, so
-// the UI always gets whatever data succeeded.
+// Refresh updates the retained store from GitLab and assembles a Snapshot from
+// it. Per-project failures are folded into Snapshot.Errors rather than aborting,
+// so the UI always gets whatever data succeeded (and whatever the store already
+// held from prior refreshes).
 func (p *Poller) Refresh(ctx context.Context) (Snapshot, error) {
 	now := time.Now()
-	topSince := now.Add(-p.opts.TopWindow)
+	windowStart := now.Add(-p.opts.TopWindow)
 	recentSince := now.Add(-p.opts.RecentWindow)
 
-	projects, errs := resolveProjects(ctx, p.client, p.specs)
+	// 1. Resolve the project set (cached; re-resolved only past ResolveTTL).
+	resolveStart := time.Now()
+	projects, errs := p.resolveCached(ctx, now)
+	resolveDur := time.Since(resolveStart)
 	if len(projects) == 0 {
+		p.recordTiming(resolveDur, 0, 0)
 		return Snapshot{UpdatedAt: now, Errors: errs}, nil
 	}
 
-	allPipes, allJobs, fetchErrs := p.fetchAll(ctx, projects, topSince)
-	errs = append(errs, fetchErrs...)
+	// 2. Incremental delta vs. a full-window reconcile. The store is empty on
+	//    the first refresh (cold) — that path naturally backfills everything.
+	cold := p.pipeWatermark.IsZero()
+	fullResync := cold || now.Sub(p.lastResync) >= p.opts.ResyncInterval
+	pipeSince := windowStart
+	if !fullResync {
+		if s := p.pipeWatermark.Add(-pipeWatermarkOverlap); s.After(windowStart) {
+			pipeSince = s
+		}
+	}
 
-	if skipped := p.enrichDurations(ctx, allPipes); skipped > 0 {
+	// 3. Fetch pipelines that changed since pipeSince (list endpoint; no duration).
+	//    Child pipelines are dropped here: they're reached via their parent's
+	//    bridges (below), not aggregated as pipelines of their own.
+	fetchStart := time.Now()
+	changed, pipeErrs := p.fetchPipelines(ctx, projects, pipeSince)
+	changed = dropChildPipelines(changed)
+	pipeDur := time.Since(fetchStart)
+	errs = append(errs, pipeErrs...)
+
+	// 4. Enrich durations for the changed pipelines that need it.
+	enrichStart := time.Now()
+	skipped := p.enrichDurations(ctx, changed)
+	enrichDur := time.Since(enrichStart)
+	if skipped > 0 {
 		errs = append(errs, fmt.Errorf(
 			"skipped duration lookups for %d pipelines (MaxDetailFetch=%d); Top averages are partial",
 			skipped, p.opts.MaxDetailFetch))
 	}
 
+	// 5. Merge the changed pipelines into the store.
+	for _, pi := range changed {
+		p.upsertPipe(pi)
+	}
+
+	// 6. Fetch jobs. A full-window pass uses the cheap project-wide bulk list
+	//    (which already includes child-pipeline jobs); a warm delta walks only
+	//    the active/changed pipeline trees — following bridges into child
+	//    pipelines — so live jobs stay fresh without re-listing history. A root
+	//    is marked done only once its whole subtree is terminal, so a child
+	//    outliving its parent is still polled.
+	jobStart := time.Now()
+	var (
+		jobs     []Job
+		jobErrs  []error
+		jobRoots int
+	)
+	if fullResync {
+		jobs, jobErrs = p.fetchJobsBulk(ctx, projects, windowStart)
+	} else {
+		rootPipes := p.jobRoots(changed)
+		jobRoots = len(rootPipes)
+		var settled, stillPending []int64
+		jobs, settled, stillPending, jobErrs = p.fetchJobsTree(ctx, rootPipes)
+		for _, id := range settled {
+			p.jobsDone[id] = true // subtree terminal: its jobs won't change again
+			delete(p.pending, id)
+		}
+		for _, id := range stillPending {
+			p.pending[id] = true
+		}
+	}
+	jobDur := time.Since(jobStart)
+	errs = append(errs, jobErrs...)
+	for _, j := range jobs {
+		p.jobs[j.ID] = j
+	}
+
+	// 7. Age out anything now beyond the Top window, then advance watermarks.
+	p.evict(windowStart)
+	p.pipeWatermark = fetchStart
+	if fullResync {
+		p.lastResync = now
+	}
+
+	p.recordTiming(resolveDur, pipeDur+jobDur, enrichDur)
+	mode := "incremental"
+	if cold {
+		mode = "cold"
+	} else if fullResync {
+		mode = "resync"
+	}
+	log.Printf("refresh timing: resolve=%s pipes=%s jobs=%s enrich=%s (%s, changed=%d, jobRoots=%d, pending=%d, store: %d pipes / %d jobs)",
+		resolveDur.Round(time.Millisecond), pipeDur.Round(time.Millisecond), jobDur.Round(time.Millisecond),
+		enrichDur.Round(time.Millisecond), mode, len(changed), jobRoots, len(p.pending), len(p.pipes), len(p.jobs))
+
+	// 8. Derive the panels from the whole retained store.
+	pipeSlice := p.pipeSlice()
+	jobSlice := p.jobSlice()
 	return Snapshot{
 		Projects:         len(projects),
-		RunningPipelines: runningPipelines(allPipes),
-		RecentPipelines:  recentPipelines(allPipes, recentSince),
-		TopPipelines:     topPipelines(allPipes, p.opts.TopLimit),
-		RunningJobs:      runningJobs(allJobs),
-		RecentJobs:       recentJobs(allJobs, recentSince),
-		TopJobs:          topJobs(allJobs, p.opts.TopLimit),
+		RunningPipelines: runningPipelines(pipeSlice),
+		RecentPipelines:  recentPipelines(pipeSlice, recentSince),
+		TopPipelines:     topPipelines(pipeSlice, p.opts.TopLimit),
+		RunningJobs:      runningJobs(jobSlice),
+		RecentJobs:       recentJobs(jobSlice, recentSince),
+		TopJobs:          topJobs(jobSlice, p.opts.TopLimit),
 		UpdatedAt:        now,
 		Errors:           errs,
 	}, nil
 }
 
-// fetchAll fans out per-project fetches with bounded concurrency and gathers the
-// combined pipelines, jobs, and any per-project errors.
-func (p *Poller) fetchAll(ctx context.Context, projects []Project, topSince time.Time) ([]Pipeline, []Job, []error) {
+// resolveCached returns the resolved project set, re-resolving only when the
+// cached set is older than ResolveTTL (group membership changes rarely, so this
+// keeps the ~second-long group scan off most refreshes). A re-resolve that turns
+// up nothing is treated as a transient failure: the last known-good set is kept
+// and retried next refresh, so a network blip doesn't blank the dashboard (and
+// discard the retained store) when we already have projects to poll.
+func (p *Poller) resolveCached(ctx context.Context, now time.Time) ([]Project, []error) {
+	if len(p.cachedProjects) > 0 && now.Sub(p.lastResolve) < p.opts.ResolveTTL {
+		return p.cachedProjects, p.cachedErrs
+	}
+	projects, errs := resolveProjects(ctx, p.client, p.specs)
+	if len(projects) > 0 {
+		p.cachedProjects = projects
+		p.cachedErrs = errs
+		p.lastResolve = now
+		return projects, errs
+	}
+	if len(p.cachedProjects) > 0 {
+		return p.cachedProjects, append(errs, p.cachedErrs...)
+	}
+	return projects, errs
+}
+
+// jobFetchScopes lists the job statuses glute pulls (bulk and per-pipeline
+// alike): the not-yet-finished states (created, pending, running) so the Running
+// panels include queued work, plus success and failed for the Recent and Top
+// panels. Keeping both fetch paths on the same scopes keeps the panels
+// consistent regardless of which path surfaced a job.
+var jobFetchScopes = []Status{
+	StatusCreated,
+	StatusPending,
+	StatusRunning,
+	StatusSuccess,
+	StatusFailed,
+}
+
+// fetchJobsBulk fans out per-project project-wide job lists with bounded
+// concurrency, tagging each job with its project path. Used for the full-window
+// backfill; the project-wide endpoint already includes child-pipeline jobs.
+func (p *Poller) fetchJobsBulk(ctx context.Context, projects []Project, since time.Time) ([]Job, []error) {
+	type result struct {
+		jobs []Job
+		err  error
+	}
+	results := make([]result, len(projects))
+
+	sem := make(chan struct{}, p.opts.Concurrency)
+	var wg sync.WaitGroup
+	for i := range projects {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			jobs, err := p.client.ListJobs(ctx, projects[i].ID, jobFetchScopes, since)
+			for j := range jobs {
+				jobs[j].ProjectPath = projects[i].Path
+			}
+			results[i] = result{jobs: jobs, err: err}
+		}(i)
+	}
+	wg.Wait()
+
+	var all []Job
+	var errs []error
+	for _, r := range results {
+		if r.err != nil {
+			errs = append(errs, r.err)
+		}
+		all = append(all, r.jobs...)
+	}
+	return all, errs
+}
+
+// jobRoots is the set of top-level pipelines to traverse for jobs this refresh:
+// everything currently active in the store (re-polled so the Running panel stays
+// live), plus changed pipelines whose jobs we haven't yet fully captured, plus
+// pending roots (finished but with a child subtree still running). Child
+// pipelines are never roots — they're reached by following bridges from these.
+// On the cold refresh the store holds the whole window and nothing is
+// job-complete, so this expands to every pipeline: the one-time job backfill.
+func (p *Poller) jobRoots(changed []Pipeline) []Pipeline {
+	roots := make(map[int64]Pipeline)
+	for _, pi := range p.pipes {
+		if pi.Status.IsActive() {
+			roots[pi.ID] = pi
+		}
+	}
+	for _, pi := range changed {
+		if !p.jobsDone[pi.ID] {
+			roots[pi.ID] = pi
+		}
+	}
+	for id := range p.pending {
+		if pi, ok := p.pipes[id]; ok && !p.jobsDone[id] {
+			roots[id] = pi
+		}
+	}
+	out := make([]Pipeline, 0, len(roots))
+	for _, pi := range roots {
+		out = append(out, pi)
+	}
+	return out
+}
+
+// dropChildPipelines removes dynamically-created child pipelines from a
+// list-derived slice. They're handled via bridge traversal, and counting them
+// as pipelines would double-count against their parent's ref in Top Pipelines.
+func dropChildPipelines(pipes []Pipeline) []Pipeline {
+	out := pipes[:0]
+	for _, pi := range pipes {
+		if pi.Source == sourceParentPipeline {
+			continue
+		}
+		out = append(out, pi)
+	}
+	return out
+}
+
+// upsertPipe stores a pipeline, preserving a previously-known duration when the
+// incoming (list-derived) copy lacks one, so a detail lookup skipped by the
+// MaxDetailFetch cap never drops timing we already had.
+func (p *Poller) upsertPipe(pi Pipeline) {
+	if pi.Duration == 0 {
+		if old, ok := p.pipes[pi.ID]; ok && old.Duration > 0 {
+			applyDetail(&pi, old)
+		}
+	}
+	p.pipes[pi.ID] = pi
+}
+
+// evict drops store entries that have aged out of the Top window, keying
+// pipelines on updated_at (mirroring the updated_after fetch boundary) and jobs
+// on created_at (mirroring the old job-window filter). It then prunes the
+// jobsDone/pending bookkeeping down to pipelines still represented in the store,
+// so child-pipeline IDs (which never live in p.pipes) don't accumulate forever.
+func (p *Poller) evict(windowStart time.Time) {
+	for id, pi := range p.pipes {
+		if pi.Updated.Before(windowStart) {
+			delete(p.pipes, id)
+		}
+	}
+	for id, j := range p.jobs {
+		if !j.Created.IsZero() && j.Created.Before(windowStart) {
+			delete(p.jobs, id)
+		}
+	}
+
+	live := make(map[int64]bool, len(p.pipes))
+	for id := range p.pipes {
+		live[id] = true
+	}
+	for _, j := range p.jobs {
+		live[j.PipelineID] = true
+	}
+	for id := range p.jobsDone {
+		if !live[id] {
+			delete(p.jobsDone, id)
+		}
+	}
+	for id := range p.pending {
+		if _, ok := p.pipes[id]; !ok {
+			delete(p.pending, id) // roots always live in p.pipes; drop if aged out
+		}
+	}
+}
+
+func (p *Poller) pipeSlice() []Pipeline {
+	out := make([]Pipeline, 0, len(p.pipes))
+	for _, pi := range p.pipes {
+		out = append(out, pi)
+	}
+	return out
+}
+
+func (p *Poller) jobSlice() []Job {
+	out := make([]Job, 0, len(p.jobs))
+	for _, j := range p.jobs {
+		out = append(out, j)
+	}
+	return out
+}
+
+// recordTiming accumulates one refresh's per-phase durations.
+func (p *Poller) recordTiming(resolve, fetch, enrich time.Duration) {
+	p.statsMu.Lock()
+	defer p.statsMu.Unlock()
+	p.stats.Count++
+	p.stats.Resolve += resolve
+	p.stats.Fetch += fetch
+	p.stats.Enrich += enrich
+}
+
+// RefreshStats returns a snapshot of the cumulative per-phase timing collected
+// so far. It is safe to call concurrently with an in-flight Refresh (e.g. from
+// the exit path while the background refresh goroutine is winding down).
+func (p *Poller) RefreshStats() RefreshStats {
+	p.statsMu.Lock()
+	defer p.statsMu.Unlock()
+	return p.stats
+}
+
+// fetchPipelines fans out per-project pipeline-list calls with bounded
+// concurrency, returning the pipelines updated since `since` tagged with their
+// project path, plus any per-project errors.
+func (p *Poller) fetchPipelines(ctx context.Context, projects []Project, since time.Time) ([]Pipeline, []error) {
 	type result struct {
 		pipes []Pipeline
-		jobs  []Job
 		err   error
 	}
 	results := make([]result, len(projects))
@@ -111,71 +470,148 @@ func (p *Poller) fetchAll(ctx context.Context, projects []Project, topSince time
 		go func(i int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			pipes, jobs, err := p.fetchProject(ctx, projects[i], topSince)
-			results[i] = result{pipes: pipes, jobs: jobs, err: err}
+			pipes, err := p.client.ListPipelines(ctx, projects[i].ID, since)
+			for j := range pipes {
+				pipes[j].ProjectPath = projects[i].Path
+			}
+			results[i] = result{pipes: pipes, err: err}
 		}(i)
 	}
 	wg.Wait()
 
-	var allPipes []Pipeline
-	var allJobs []Job
+	var all []Pipeline
 	var errs []error
 	for _, r := range results {
 		if r.err != nil {
 			errs = append(errs, r.err)
 		}
-		allPipes = append(allPipes, r.pipes...)
-		allJobs = append(allJobs, r.jobs...)
+		all = append(all, r.pipes...)
 	}
-	return allPipes, allJobs, errs
+	return all, errs
 }
 
-// jobFetchScopes lists the job statuses glute pulls per project: the not-yet-
-// finished states (created, pending, running) so the Running panel includes
-// queued work, plus success and failed for the Recent and Top panels.
-var jobFetchScopes = []Status{
-	StatusCreated,
-	StatusPending,
-	StatusRunning,
-	StatusSuccess,
-	StatusFailed,
+// treeNode is one pipeline visited while walking a root's parent→child tree.
+type treeNode struct {
+	rootID      int64  // the top-level pipeline this subtree belongs to
+	projectID   int64  // project of this pipeline (a child may differ from its root)
+	pipelineID  int64  // this pipeline
+	projectPath string // inherited from the root, for tagging jobs
 }
 
-// fetchProject fetches one project's pipelines and jobs, tagging each with the
-// project path. A failure in one call doesn't discard the other's data.
-func (p *Poller) fetchProject(ctx context.Context, proj Project, topSince time.Time) ([]Pipeline, []Job, error) {
-	var errList []error
+// fetchJobsTree fetches jobs for each root pipeline and, following each
+// pipeline's bridges, for its downstream child pipelines (recursively). Child
+// pipelines don't appear in the project pipeline list, so their jobs are only
+// reachable this way; jobs inherit their root's project path.
+//
+// It returns all jobs plus, for the finished roots, which are settled (whole
+// subtree terminal → mark done and stop) versus still pending (a descendant is
+// active, or a fetch failed → keep polling next refresh). Active roots are
+// omitted from both: they're re-polled via the store while they run.
+func (p *Poller) fetchJobsTree(ctx context.Context, roots []Pipeline) (jobs []Job, settled, pending []int64, errs []error) {
+	visited := map[int64]bool{}
+	rootFinished := map[int64]bool{}
+	subtreeActive := map[int64]bool{} // rootID → a node in its subtree is active (or unfetched)
 
-	pipes, err := p.client.ListPipelines(ctx, proj.ID, topSince)
-	if err != nil {
-		errList = append(errList, err)
-	}
-	for i := range pipes {
-		pipes[i].ProjectPath = proj.Path
-	}
-
-	jobs, err := p.client.ListJobs(ctx, proj.ID, jobFetchScopes, topSince)
-	if err != nil {
-		errList = append(errList, err)
-	}
-	for i := range jobs {
-		jobs[i].ProjectPath = proj.Path
+	var frontier []treeNode
+	for _, pi := range roots {
+		if visited[pi.ID] {
+			continue
+		}
+		visited[pi.ID] = true
+		rootFinished[pi.ID] = pi.Status.IsFinished()
+		if !pi.Status.IsFinished() {
+			subtreeActive[pi.ID] = true
+		}
+		frontier = append(frontier, treeNode{pi.ID, pi.ProjectID, pi.ID, pi.ProjectPath})
 	}
 
-	return pipes, jobs, errors.Join(errList...)
+	for len(frontier) > 0 {
+		type result struct {
+			node     treeNode
+			jobs     []Job
+			children []Pipeline
+			jobOK    bool
+			errs     []error
+		}
+		results := make([]result, len(frontier))
+
+		sem := make(chan struct{}, p.opts.Concurrency)
+		var wg sync.WaitGroup
+		for i := range frontier {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(i int) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				n := frontier[i]
+				r := result{node: n}
+				js, err := p.client.ListPipelineJobs(ctx, n.projectID, n.pipelineID, jobFetchScopes)
+				if err != nil {
+					r.errs = append(r.errs, err)
+				} else {
+					r.jobOK = true
+					for k := range js {
+						js[k].ProjectPath = n.projectPath
+					}
+					r.jobs = js
+				}
+				children, err := p.client.ListDownstreamPipelines(ctx, n.projectID, n.pipelineID)
+				if err != nil {
+					r.errs = append(r.errs, err)
+				} else {
+					r.children = children
+				}
+				results[i] = r
+			}(i)
+		}
+		wg.Wait()
+
+		var next []treeNode
+		for _, r := range results {
+			jobs = append(jobs, r.jobs...)
+			errs = append(errs, r.errs...)
+			// A node we couldn't read leaves its subtree unsettled, so we retry.
+			if !r.jobOK {
+				subtreeActive[r.node.rootID] = true
+			}
+			for _, c := range r.children {
+				if visited[c.ID] || p.jobsDone[c.ID] {
+					continue
+				}
+				visited[c.ID] = true
+				if !c.Status.IsFinished() {
+					subtreeActive[r.node.rootID] = true
+				}
+				next = append(next, treeNode{r.node.rootID, c.ProjectID, c.ID, r.node.projectPath})
+			}
+		}
+		frontier = next
+	}
+
+	for id, finished := range rootFinished {
+		if !finished {
+			continue // active root: re-polled via the store, not tracked here
+		}
+		if subtreeActive[id] {
+			pending = append(pending, id)
+		} else {
+			settled = append(settled, id)
+		}
+	}
+	return jobs, settled, pending, errs
 }
 
 // enrichDurations fills in pipeline durations from the detail endpoint, serving
-// finished pipelines from an immutable cache and bounding network work by
-// MaxDetailFetch. It returns the number of pipelines left unenriched due to the
-// cap (newest are enriched first). Distinct slice indices are written from
-// separate goroutines, which is data-race-free.
+// pipelines already stored as finished-with-duration from the retained store and
+// bounding network work by MaxDetailFetch. It returns the number of pipelines
+// left unenriched due to the cap (newest are enriched first). Distinct slice
+// indices are written from separate goroutines, which is data-race-free.
 func (p *Poller) enrichDurations(ctx context.Context, pipes []Pipeline) int {
 	sort.Slice(pipes, func(i, j int) bool { return pipes[i].Updated.After(pipes[j].Updated) })
 
 	var toFetch []int
 	for i := range pipes {
-		if cached, ok := p.cachedPipe(pipes[i].ID); ok {
+		if cached, ok := p.pipes[pipes[i].ID]; ok && cached.Status.IsFinished() && cached.Duration > 0 {
 			applyDetail(&pipes[i], cached)
 			continue
 		}
@@ -201,9 +637,6 @@ func (p *Poller) enrichDurations(ctx context.Context, pipes []Pipeline) int {
 				return // leave unenriched; non-fatal
 			}
 			applyDetail(&pipes[idx], detail)
-			if pipes[idx].Status.IsFinished() {
-				p.cachePipe(pipes[idx])
-			}
 		}(idx)
 	}
 	wg.Wait()
@@ -214,17 +647,4 @@ func applyDetail(dst *Pipeline, detail Pipeline) {
 	dst.Duration = detail.Duration
 	dst.Started = detail.Started
 	dst.Finished = detail.Finished
-}
-
-func (p *Poller) cachedPipe(id int64) (Pipeline, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	v, ok := p.pipeCache[id]
-	return v, ok
-}
-
-func (p *Poller) cachePipe(pipe Pipeline) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.pipeCache[pipe.ID] = pipe
 }
