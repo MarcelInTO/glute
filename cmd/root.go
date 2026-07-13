@@ -98,6 +98,7 @@ func runDashboard() error {
 		RefreshInterval: time.Duration(cfg.RefreshInterval),
 		Title:           title,
 		LogPath:         logPath(instance),
+		RunnerAliases:   cfg.RunnerAliases,
 	}).Run()
 
 	// The TUI has torn down and restored the terminal by the time Run returns,

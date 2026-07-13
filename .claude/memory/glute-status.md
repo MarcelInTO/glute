@@ -8,8 +8,8 @@ metadata:
 ---
 
 glute is a single-binary, read-only Go TUI dashboard for GitLab CI/CD
-(Pipelines and Jobs tabs). Repo: `/mnt/md0/devWevr/glute`; see its CLAUDE.md
-for decisions and rationale.
+(Current, Pipelines, and Jobs tabs). Repo: `/mnt/md0/devWevr/glute`; see its
+CLAUDE.md for decisions and rationale.
 
 As of 2026-07-04: Phases 1–3 are done and committed on a local `main`
 (scaffold + `glute auth`, the `internal/gitlab` data layer, and the tview
@@ -27,11 +27,25 @@ instrumentation (`RefreshStats`, printed to stderr on exit; per-refresh
 `refresh timing:` log line). See CLAUDE.md's "Poller" decision + GitLab API
 notes for the design. Committed and pushed to `main` (`cd143d0`).
 
+As of 2026-07-10 (uncommitted, working tree): added the **Current tab** — a new
+first/default tab that renders a hierarchical live-monitoring view: active root
+pipelines → their jobs (grouped by stage) → downstream child pipelines (nested,
+marked `↳`), in one indented, scrollable, selectable table with a subtree
+jobs-done/total progress column. Built by a new pure `activePipelines` aggregate
+over the retained store; the parent→child edges come from new
+`childPipes`/`childParent` maps the poller's job-tree walk records for active
+roots. Two-part plan: (1) this tab — DONE; (2) still TODO — remove the Running
+panels from the Pipelines/Jobs tabs and replace them with optimization-oriented
+stats (which pipelines/jobs are slow, run too often, fail too often, wait too
+long for runners). All tests pass; not yet committed.
+
 **Why:** Records live status and next-steps that aren't obvious from the code.
 
 **How to apply:**
-- **Next (polish pass):** scroll long tables (Top-jobs overflows its panel),
-  responsive column widths, and surface the footer warning's detail in the UI.
+- **Next:** part (2) above — rework the Pipelines/Jobs tabs into stats panels
+  (drop their now-redundant Running panels, since Current supersedes them).
+- **Also queued (polish pass):** scroll long tables on the stats tabs, responsive
+  column widths, and surface the footer warning's detail in the UI.
 - **Deferred:** the Runners tab (dropped — admin-only metric); release
   automation (cross-builds exist via `make`, but no GoReleaser / macOS
   notarization / Windows signing). In-memory incremental caching is now DONE;

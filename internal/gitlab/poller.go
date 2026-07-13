@@ -79,6 +79,8 @@ type Poller struct {
 	jobs          map[int64]Job      // Top-window jobs, keyed by job ID
 	jobsDone      map[int64]bool     // pipeline IDs whose terminal jobs are fully captured
 	pending       map[int64]bool     // finished root pipelines with a still-active child subtree
+	childPipes    map[int64]Pipeline // child pipeline metadata (id → pipeline), for the Current tree
+	childParent   map[int64]int64    // child pipeline id → its immediate parent pipeline id
 	pipeWatermark time.Time          // start time of the last pipeline fetch
 	lastResync    time.Time          // when the last full-window re-list ran
 
@@ -120,13 +122,15 @@ func avgDuration(total time.Duration, n int) time.Duration {
 // NewPoller builds a Poller for the given client and product specs.
 func NewPoller(client *Client, specs []ProductSpec, opts PollOptions) *Poller {
 	return &Poller{
-		client:   client,
-		specs:    specs,
-		opts:     opts.withDefaults(),
-		pipes:    map[int64]Pipeline{},
-		jobs:     map[int64]Job{},
-		jobsDone: map[int64]bool{},
-		pending:  map[int64]bool{},
+		client:      client,
+		specs:       specs,
+		opts:        opts.withDefaults(),
+		pipes:       map[int64]Pipeline{},
+		jobs:        map[int64]Job{},
+		jobsDone:    map[int64]bool{},
+		pending:     map[int64]bool{},
+		childPipes:  map[int64]Pipeline{},
+		childParent: map[int64]int64{},
 	}
 }
 
@@ -146,6 +150,13 @@ func (p *Poller) Refresh(ctx context.Context) (Snapshot, error) {
 	if len(projects) == 0 {
 		p.recordTiming(resolveDur, 0, 0)
 		return Snapshot{UpdatedAt: now, Errors: errs}, nil
+	}
+
+	// A projectID→path map lets the tree walk tag child pipelines (which may
+	// live in a different project than their root) with a real path.
+	projByID := make(map[int64]string, len(projects))
+	for _, pr := range projects {
+		projByID[pr.ID] = pr.Path
 	}
 
 	// 2. Incremental delta vs. a full-window reconcile. The store is empty on
@@ -201,7 +212,7 @@ func (p *Poller) Refresh(ctx context.Context) (Snapshot, error) {
 		rootPipes := p.jobRoots(changed)
 		jobRoots = len(rootPipes)
 		var settled, stillPending []int64
-		jobs, settled, stillPending, jobErrs = p.fetchJobsTree(ctx, rootPipes)
+		jobs, settled, stillPending, jobErrs = p.fetchJobsTree(ctx, rootPipes, projByID)
 		for _, id := range settled {
 			p.jobsDone[id] = true // subtree terminal: its jobs won't change again
 			delete(p.pending, id)
@@ -239,6 +250,7 @@ func (p *Poller) Refresh(ctx context.Context) (Snapshot, error) {
 	jobSlice := p.jobSlice()
 	return Snapshot{
 		Projects:         len(projects),
+		Current:          activePipelines(pipeSlice, jobSlice, p.childPipes, p.childParent),
 		RunningPipelines: runningPipelines(pipeSlice),
 		RecentPipelines:  recentPipelines(pipeSlice, recentSince),
 		TopPipelines:     topPipelines(pipeSlice, p.opts.TopLimit),
@@ -415,6 +427,16 @@ func (p *Poller) evict(windowStart time.Time) {
 			delete(p.pending, id) // roots always live in p.pipes; drop if aged out
 		}
 	}
+
+	// Prune the retained tree to child pipelines still represented in the store
+	// (those with a live job, via live[j.PipelineID]); a child whose jobs have
+	// aged out no longer belongs to any visible active tree.
+	for id := range p.childPipes {
+		if !live[id] {
+			delete(p.childPipes, id)
+			delete(p.childParent, id)
+		}
+	}
 }
 
 func (p *Poller) pipeSlice() []Pipeline {
@@ -507,7 +529,13 @@ type treeNode struct {
 // subtree terminal → mark done and stop) versus still pending (a descendant is
 // active, or a fetch failed → keep polling next refresh). Active roots are
 // omitted from both: they're re-polled via the store while they run.
-func (p *Poller) fetchJobsTree(ctx context.Context, roots []Pipeline) (jobs []Job, settled, pending []int64, errs []error) {
+//
+// As a side effect it records the parent→child pipeline edges it discovers into
+// p.childPipes/p.childParent (tagging children with a real project path via
+// projByID, falling back to the root's), so the Current tab can reconstruct the
+// active tree. Edges are recorded for every discovered child, even one whose jobs
+// are already settled, so a finished child under a still-running root is retained.
+func (p *Poller) fetchJobsTree(ctx context.Context, roots []Pipeline, projByID map[int64]string) (jobs []Job, settled, pending []int64, errs []error) {
 	visited := map[int64]bool{}
 	rootFinished := map[int64]bool{}
 	subtreeActive := map[int64]bool{} // rootID → a node in its subtree is active (or unfetched)
@@ -575,6 +603,17 @@ func (p *Poller) fetchJobsTree(ctx context.Context, roots []Pipeline) (jobs []Jo
 				subtreeActive[r.node.rootID] = true
 			}
 			for _, c := range r.children {
+				// Record the edge and child metadata regardless of whether we
+				// traverse into it, so the Current tree keeps a finished child.
+				cp := c
+				if path, ok := projByID[c.ProjectID]; ok {
+					cp.ProjectPath = path
+				} else {
+					cp.ProjectPath = r.node.projectPath
+				}
+				p.childPipes[c.ID] = cp
+				p.childParent[c.ID] = r.node.pipelineID
+
 				if visited[c.ID] || p.jobsDone[c.ID] {
 					continue
 				}

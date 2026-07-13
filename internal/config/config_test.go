@@ -61,6 +61,34 @@ func TestSaveEmitsProductTables(t *testing.T) {
 	}
 }
 
+func TestRunnerAliasesRoundTripAndExample(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("GLUTE_CONFIG_DIR", dir)
+
+	// With no aliases, the file carries a commented [runner_aliases] example.
+	if err := Save(DefaultInstance, defaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if !strings.Contains(string(data), "# [runner_aliases]") {
+		t.Errorf("empty config should include a commented [runner_aliases] example:\n%s", string(data))
+	}
+
+	// A populated map round-trips.
+	cfg := defaultConfig()
+	cfg.RunnerAliases = map[string]string{"very-long-runner-name-01": "r01"}
+	if err := Save(DefaultInstance, cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(DefaultInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RunnerAliases["very-long-runner-name-01"] != "r01" {
+		t.Errorf("runner aliases did not round-trip: %+v", got.RunnerAliases)
+	}
+}
+
 func TestInstancesAreIsolated(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("GLUTE_CONFIG_DIR", dir)

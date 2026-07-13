@@ -80,6 +80,7 @@ type Job struct {
 	PipelineID    int64
 	WebURL        string
 	FailureReason string
+	Runner        string // the runner the job ran on (its description, else name)
 	Created       time.Time
 	Started       time.Time
 	Finished      time.Time
@@ -126,11 +127,43 @@ func (a JobAgg) SuccessRate() float64 {
 	return 0
 }
 
+// ActivePipeline is one node of the Current tab's tree: a pipeline together with
+// the jobs that belong directly to it and its downstream child pipelines
+// (recursively). Roots are the currently-active top-level pipelines; a root's
+// subtree may include already-finished jobs and children, so the tab can show
+// progress and context while the root is still running.
+type ActivePipeline struct {
+	Pipeline
+	Jobs     []Job            // jobs of this pipeline itself (not its children)
+	Children []ActivePipeline // downstream child pipelines, recursively
+}
+
+// Progress counts finished vs. total jobs across this node's whole subtree
+// (its own jobs plus every descendant's), for the Current tab's progress column.
+func (a ActivePipeline) Progress() (done, total int) {
+	for _, j := range a.Jobs {
+		total++
+		if j.Status.IsFinished() {
+			done++
+		}
+	}
+	for _, c := range a.Children {
+		cd, ct := c.Progress()
+		done += cd
+		total += ct
+	}
+	return done, total
+}
+
 // Snapshot is an immutable, point-in-time view of the watched products' CI
-// state. One Refresh produces all six panels from a single fetch pass, so the
-// UI renders whatever the latest Snapshot holds.
+// state. One Refresh produces all panels from a single fetch pass, so the UI
+// renders whatever the latest Snapshot holds.
 type Snapshot struct {
 	Projects int // count of resolved projects polled
+
+	// Current is the tree of currently-active pipelines with their jobs and
+	// child pipelines, powering the Current tab's live monitoring view.
+	Current []ActivePipeline
 
 	RunningPipelines []Pipeline
 	RecentPipelines  []Pipeline

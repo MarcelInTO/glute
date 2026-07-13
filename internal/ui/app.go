@@ -21,6 +21,7 @@ import (
 const (
 	pageMain      = "main"
 	pageHelp      = "help"
+	pageCurrent   = "current"
 	pagePipelines = "pipelines"
 	pageJobs      = "jobs"
 )
@@ -28,7 +29,8 @@ const (
 const helpText = `glute — keys
 
   Tab / Shift-Tab    switch tabs
-  1 / 2              Pipelines / Jobs
+  1 / 2 / 3          Current / Pipelines / Jobs
+  ↑ / ↓              scroll the Current tree
   r                  refresh now
   ?                  toggle this help
   q / Ctrl-C         quit`
@@ -38,6 +40,9 @@ type Options struct {
 	RefreshInterval time.Duration
 	Title           string // shown in the footer, e.g. "<instance> · <url>"
 	LogPath         string // file the standard logger is redirected to
+	// RunnerAliases maps a runner's full name to a short display label for the
+	// Current tab; runners absent from the map show their real name.
+	RunnerAliases map[string]string
 }
 
 // Dashboard is the top-level TUI application.
@@ -49,6 +54,7 @@ type Dashboard struct {
 	footer *tview.TextView
 	help   *tview.Modal
 
+	current   *currentView
 	pipelines *pipelineView
 	jobs      *jobView
 
@@ -72,11 +78,13 @@ func NewDashboard(svc gitlab.Service, opts Options) *Dashboard {
 		opts.RefreshInterval = 30 * time.Second
 	}
 
+	current := newCurrentView(opts.RunnerAliases)
 	pipe := newPipelineView()
 	jobs := newJobView()
 
 	pages := tview.NewPages()
-	pages.AddPage(pagePipelines, pipe.root, true, true)
+	pages.AddPage(pageCurrent, current.root, true, true)
+	pages.AddPage(pagePipelines, pipe.root, true, false)
 	pages.AddPage(pageJobs, jobs.root, true, false)
 
 	header := tview.NewTextView()
@@ -104,20 +112,34 @@ func NewDashboard(svc gitlab.Service, opts Options) *Dashboard {
 		header:    header,
 		footer:    footer,
 		help:      help,
+		current:   current,
 		pipelines: pipe,
 		jobs:      jobs,
 		svc:       svc,
 		opts:      opts,
-		tabs:      []string{pagePipelines, pageJobs},
-		tabLabels: []string{"Pipelines", "Jobs"},
+		tabs:      []string{pageCurrent, pagePipelines, pageJobs},
+		tabLabels: []string{"Current", "Pipelines", "Jobs"},
 		trigger:   make(chan struct{}, 1),
 	}
+
+	// Selecting a row in the Current tree reveals that row's full project path
+	// in the footer, the scroll-safe counterpart to the mouse hover the other
+	// tabs use (a scrolling table breaks the hover's fixed row math).
+	current.table.SetSelectionChangedFunc(func(row, _ int) {
+		if path, ok := current.pathAtRow(row); ok {
+			d.hoverPath = path
+		} else {
+			d.hoverPath = ""
+		}
+		d.updateFooter()
+	})
 
 	help.SetDoneFunc(func(int, string) { d.hideHelp() })
 	d.app.SetInputCapture(d.onKey)
 	d.app.SetMouseCapture(d.onMouse)
 	d.app.SetRoot(outer, true)
 	d.app.EnableMouse(true)
+	d.focusActive()
 	return d
 }
 
@@ -182,6 +204,9 @@ func (d *Dashboard) onKey(ev *tcell.EventKey) *tcell.EventKey {
 	case '2':
 		d.selectTab(1)
 		return nil
+	case '3':
+		d.selectTab(2)
+		return nil
 	}
 	return ev
 }
@@ -192,7 +217,31 @@ func (d *Dashboard) selectTab(i int) {
 	}
 	d.active = i
 	d.pages.SwitchToPage(d.tabs[i])
+	// The footer's hover/selection detail belongs to the tab it came from; on
+	// the Current tab, re-derive it from the row that's already selected so the
+	// path shows immediately rather than only after the next selection move.
+	d.hoverPath = ""
+	if d.tabs[i] == pageCurrent {
+		if row, _ := d.current.table.GetSelection(); row > 0 {
+			if path, ok := d.current.pathAtRow(row); ok {
+				d.hoverPath = path
+			}
+		}
+	}
+	d.focusActive()
 	d.updateHeader()
+	d.updateFooter()
+}
+
+// focusActive directs keyboard focus at the active tab's primitive. The Current
+// tab's table must hold focus for its arrow-key scrolling; the other tabs have
+// no focusable widget, so focus rests on the pages container.
+func (d *Dashboard) focusActive() {
+	if d.tabs[d.active] == pageCurrent {
+		d.app.SetFocus(d.current.table)
+	} else {
+		d.app.SetFocus(d.pages)
+	}
 }
 
 func (d *Dashboard) cycleTab(delta int) {
@@ -207,7 +256,7 @@ func (d *Dashboard) showHelp() {
 
 func (d *Dashboard) hideHelp() {
 	d.outer.HidePage(pageHelp)
-	d.app.SetFocus(d.pages)
+	d.focusActive()
 }
 
 // onMouse reveals the full project path of the row under the cursor in the
@@ -220,6 +269,12 @@ func (d *Dashboard) onMouse(event *tcell.EventMouse, action tview.MouseAction) (
 	}
 	if name, _ := d.outer.GetFrontPage(); name == pageHelp {
 		return event, action // don't chase the mouse under the help overlay
+	}
+	// The Current tab scrolls, so its footer detail is driven by row selection
+	// (see SetSelectionChangedFunc), not by mouse position; let tview handle the
+	// click for selection and leave the footer alone.
+	if d.tabs[d.active] == pageCurrent {
+		return event, action
 	}
 
 	hover := ""
@@ -235,13 +290,13 @@ func (d *Dashboard) onMouse(event *tcell.EventMouse, action tview.MouseAction) (
 }
 
 func (d *Dashboard) hoverPathAt(x, y int) (string, bool) {
-	switch d.active {
-	case 0:
+	switch d.tabs[d.active] {
+	case pagePipelines:
 		return d.pipelines.hoverPathAt(x, y)
-	case 1:
+	case pageJobs:
 		return d.jobs.hoverPathAt(x, y)
 	}
-	return "", false
+	return "", false // the Current tab reveals paths via selection, not hover
 }
 
 func (d *Dashboard) triggerRefresh() {
@@ -284,6 +339,7 @@ func (d *Dashboard) doRefresh(ctx context.Context) {
 		d.lastErr = err
 		if err == nil {
 			d.snapshot = snap
+			d.current.update(snap)
 			d.pipelines.update(snap)
 			d.jobs.update(snap)
 		}

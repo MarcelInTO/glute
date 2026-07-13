@@ -95,8 +95,47 @@ func SampleSnapshot() Snapshot {
 			AvgDuration: 1*time.Minute + 50*time.Second, KnownDurations: 141},
 	}
 
+	// Current mirrors the running pipelines above as a tree: the API root has a
+	// finished build job, two live test jobs, and a downstream deploy pipeline
+	// (a child in another project) that's still pending.
+	current := []ActivePipeline{
+		{
+			Pipeline: running[0], // acme/payments/api · main · running
+			Jobs: []Job{
+				{ID: 5111, Name: "compile", Stage: "build", Status: StatusSuccess,
+					ProjectPath: "acme/payments/api", PipelineID: 101, Runner: "shared-linux-01",
+					Started: now.Add(-90 * time.Second), Finished: now.Add(-45 * time.Second), Duration: 45 * time.Second},
+				{ID: 5101, Name: "unit-tests", Stage: "test", Status: StatusRunning,
+					ProjectPath: "acme/payments/api", PipelineID: 101, Runner: "shared-linux-02", Started: now.Add(-42 * time.Second)},
+				{ID: 5112, Name: "integration-tests", Stage: "test", Status: StatusPending,
+					ProjectPath: "acme/payments/api", PipelineID: 101, Created: now.Add(-42 * time.Second)},
+			},
+			Children: []ActivePipeline{
+				{
+					Pipeline: Pipeline{ID: 201, ProjectPath: "acme/payments/deploy", Ref: "main",
+						Status: StatusPending, Source: sourceParentPipeline, Created: now.Add(-30 * time.Second)},
+					Jobs: []Job{
+						{ID: 5201, Name: "deploy-staging", Stage: "deploy", Status: StatusPending,
+							ProjectPath: "acme/payments/deploy", PipelineID: 201, Created: now.Add(-30 * time.Second)},
+					},
+				},
+			},
+		},
+		{
+			Pipeline: running[1], // acme/payments/web · release/2.1 · running
+			Jobs: []Job{
+				{ID: 5102, Name: "build", Stage: "build", Status: StatusRunning,
+					ProjectPath: "acme/payments/web", PipelineID: 102, Runner: "docker-builder", Started: now.Add(-4 * time.Minute)},
+			},
+		},
+		{
+			Pipeline: running[2], // acme/platform/gateway · main · pending
+		},
+	}
+
 	return Snapshot{
 		Projects:         3,
+		Current:          current,
 		RunningPipelines: running,
 		RecentPipelines:  recent,
 		TopPipelines:     topPipe,

@@ -106,6 +106,72 @@ func topPipelines(pipes []Pipeline, limit int) []PipelineAgg {
 	return capAgg(out, limit)
 }
 
+// activePipelines builds the Current-tab tree: every active root pipeline with
+// its own jobs and its downstream child pipelines, recursively. Roots come from
+// the pipeline store (where child pipelines were dropped); child metadata and the
+// parent→child edges are supplied from the retained tree that the job walk
+// learns. Jobs attach to their pipeline by PipelineID; each node's jobs are
+// sorted by stage then start so same-stage jobs group visually. Children are
+// ordered by start time. A visited set guards against a malformed edge cycle.
+func activePipelines(roots []Pipeline, jobs []Job, childPipes map[int64]Pipeline, childParent map[int64]int64) []ActivePipeline {
+	jobsByPipe := map[int64][]Job{}
+	for _, j := range jobs {
+		jobsByPipe[j.PipelineID] = append(jobsByPipe[j.PipelineID], j)
+	}
+	kids := map[int64][]int64{}
+	for child, parent := range childParent {
+		kids[parent] = append(kids[parent], child)
+	}
+
+	seen := map[int64]bool{}
+	var build func(pi Pipeline) ActivePipeline
+	build = func(pi Pipeline) ActivePipeline {
+		seen[pi.ID] = true
+		node := ActivePipeline{Pipeline: pi, Jobs: sortPipelineJobs(jobsByPipe[pi.ID])}
+		childIDs := append([]int64(nil), kids[pi.ID]...)
+		sort.Slice(childIDs, func(i, j int) bool {
+			ci, cj := childPipes[childIDs[i]], childPipes[childIDs[j]]
+			if !pipeStart(ci).Equal(pipeStart(cj)) {
+				return pipeStart(ci).Before(pipeStart(cj))
+			}
+			return childIDs[i] < childIDs[j]
+		})
+		for _, cid := range childIDs {
+			cp, ok := childPipes[cid]
+			if !ok || seen[cid] {
+				continue
+			}
+			node.Children = append(node.Children, build(cp))
+		}
+		return node
+	}
+
+	var out []ActivePipeline
+	for _, pi := range roots {
+		if pi.Status.IsActive() {
+			out = append(out, build(pi))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return pipeStart(out[i].Pipeline).After(pipeStart(out[j].Pipeline)) })
+	return out
+}
+
+// sortPipelineJobs orders a pipeline's jobs by stage, then start time, then name,
+// so the Current tab lists a pipeline's jobs grouped by stage in a stable order.
+func sortPipelineJobs(jobs []Job) []Job {
+	out := append([]Job(nil), jobs...)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Stage != out[j].Stage {
+			return out[i].Stage < out[j].Stage
+		}
+		if !jobStart(out[i]).Equal(jobStart(out[j])) {
+			return jobStart(out[i]).Before(jobStart(out[j]))
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
 func runningJobs(jobs []Job) []Job {
 	var out []Job
 	for _, j := range jobs {

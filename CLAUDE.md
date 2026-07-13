@@ -34,9 +34,9 @@ stays trivial.
 - **Instances**: the `default` instance uses the base config dir directly;
   named instances get a subdirectory. Zero migration — an existing
   single-instance setup keeps working as `default`.
-- **Data layer = one `Service.Refresh(ctx) → Snapshot`** that feeds all six
-  panels, so the UI never shows a half-loaded state. The UI depends on the
-  `Service` interface (fake + `SampleSnapshot` for tests).
+- **Data layer = one `Service.Refresh(ctx) → Snapshot`** that feeds every panel
+  and the Current tree, so the UI never shows a half-loaded state. The UI depends
+  on the `Service` interface (fake + `SampleSnapshot` for tests).
 - **Incremental retained store (the `Poller`), not a full fetch per refresh.**
   The Poller keeps an in-memory store of the pipelines and jobs within the Top
   window and updates it incrementally: each refresh fetches only pipelines
@@ -80,7 +80,28 @@ stays trivial.
 
 ## TUI notes
 
-- tview has no native tooltip — "hover" reveals a row's full project path in
-  the footer via a mouse-motion capture (falls back to click).
+- **Tabs: Current (default) · Pipelines · Jobs.** *Current* is the live-monitoring
+  view: a single indented, scrollable table of the active-pipeline tree — each
+  active root pipeline, its jobs (grouped by stage), and its downstream child
+  pipelines nested one level deeper (marked `↳`), with a subtree jobs-done/total
+  progress column. The tree is built by the pure `activePipelines` aggregate over
+  the retained store; the parent→child edges come from `childPipes`/`childParent`,
+  which the job-tree walk records for active roots (so they're fresh on every warm
+  refresh and self-heal one refresh after a cold start / resync, where the bulk
+  job path learns no edges). Pipelines/Jobs remain the optimization-oriented
+  stats tabs (their Running panels are slated to be replaced by more stats).
+- The Current tree's job rows show a **RUNNER** column (the job's runner
+  description, from `Job.Runner`). Runner descriptions are long, so
+  `config.toml`'s optional `[runner_aliases]` table remaps a runner's full name
+  to a short display label; the remap is display-only (applied in the UI via
+  `Options.RunnerAliases` → `currentView.displayRunner`), so the data layer keeps
+  the true name. Unlisted runners show their real name.
+- The Current table is *selectable* (so it scrolls with ↑/↓); it reveals the
+  selected row's full project path in the footer via `SetSelectionChangedFunc`,
+  because the mouse-hover reveal below assumes fixed, non-scrolling row math and
+  would point at the wrong row once scrolled.
+- tview has no native tooltip — on the non-scrolling tabs, "hover" reveals a
+  row's full project path in the footer via a mouse-motion capture (falls back to
+  click).
 - A TUI owns the screen, so logs go to `<instance dir>/glute.log`, never stdout.
 - Muted text uses `silver` (not `gray`) so it stays legible on dark terminals.

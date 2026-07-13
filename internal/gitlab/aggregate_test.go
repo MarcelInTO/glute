@@ -95,6 +95,73 @@ func TestRunningJobsIncludesPending(t *testing.T) {
 	}
 }
 
+func TestActivePipelinesBuildsTree(t *testing.T) {
+	now := time.Now()
+	roots := []Pipeline{
+		{ID: 1, ProjectPath: "a/x", Ref: "main", Status: StatusRunning, Started: now.Add(-2 * time.Minute)},
+		{ID: 2, ProjectPath: "a/y", Ref: "main", Status: StatusSuccess}, // finished root -> excluded
+	}
+	jobs := []Job{
+		// Root 1's own jobs, out of stage order to exercise the sort.
+		{ID: 11, PipelineID: 1, Name: "unit", Stage: "test", Status: StatusRunning, Started: now.Add(-time.Minute)},
+		{ID: 10, PipelineID: 1, Name: "compile", Stage: "build", Status: StatusSuccess, Duration: 30 * time.Second},
+		// Child pipeline 3's job.
+		{ID: 30, PipelineID: 3, Name: "deploy", Stage: "deploy", Status: StatusPending},
+		// A job of the excluded finished root, which must not surface.
+		{ID: 20, PipelineID: 2, Name: "noop", Stage: "test", Status: StatusSuccess},
+	}
+	childPipes := map[int64]Pipeline{
+		3: {ID: 3, ProjectPath: "a/deploy", Ref: "main", Status: StatusPending, Source: sourceParentPipeline},
+	}
+	childParent := map[int64]int64{3: 1}
+
+	got := activePipelines(roots, jobs, childPipes, childParent)
+	if len(got) != 1 {
+		t.Fatalf("want 1 active root, got %d: %+v", len(got), got)
+	}
+	root := got[0]
+	if root.ID != 1 {
+		t.Fatalf("want root pipeline 1, got %d", root.ID)
+	}
+	// Jobs sorted by stage: build before test.
+	if len(root.Jobs) != 2 || root.Jobs[0].Stage != "build" || root.Jobs[1].Stage != "test" {
+		t.Errorf("root jobs not sorted by stage: %+v", root.Jobs)
+	}
+	// Child nested with its own job, tagged with its own project path.
+	if len(root.Children) != 1 || root.Children[0].ID != 3 || root.Children[0].ProjectPath != "a/deploy" {
+		t.Fatalf("child pipeline not nested correctly: %+v", root.Children)
+	}
+	if len(root.Children[0].Jobs) != 1 || root.Children[0].Jobs[0].Name != "deploy" {
+		t.Errorf("child job missing: %+v", root.Children[0].Jobs)
+	}
+	// Progress spans the whole subtree: 1 of 3 jobs finished (compile).
+	if done, total := root.Progress(); done != 1 || total != 3 {
+		t.Errorf("subtree progress: want 1/3, got %d/%d", done, total)
+	}
+}
+
+func TestActivePipelinesToleratesEdgeCycle(t *testing.T) {
+	// A malformed parent↔child cycle must not spin forever.
+	roots := []Pipeline{{ID: 1, ProjectPath: "a/x", Ref: "main", Status: StatusRunning}}
+	childPipes := map[int64]Pipeline{
+		1: {ID: 1, ProjectPath: "a/x", Ref: "main", Status: StatusRunning},
+		2: {ID: 2, ProjectPath: "a/x", Ref: "main", Status: StatusRunning},
+	}
+	childParent := map[int64]int64{2: 1, 1: 2} // 1 -> 2 -> 1
+
+	got := activePipelines(roots, nil, childPipes, childParent)
+	if len(got) != 1 || got[0].ID != 1 {
+		t.Fatalf("want single root 1, got %+v", got)
+	}
+	// 1 has child 2; 2's only child is 1, already visited, so recursion stops.
+	if len(got[0].Children) != 1 || got[0].Children[0].ID != 2 {
+		t.Fatalf("want child 2 under root 1, got %+v", got[0].Children)
+	}
+	if len(got[0].Children[0].Children) != 0 {
+		t.Errorf("cycle should be broken at the second visit, got %+v", got[0].Children[0].Children)
+	}
+}
+
 func TestTopJobsGroupsByProjectAndName(t *testing.T) {
 	jobs := []Job{
 		{ProjectPath: "a/x", Name: "test", Status: StatusSuccess, Duration: time.Minute},

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/MarcelInTO/glute/internal/auth"
@@ -77,6 +78,11 @@ func runRefresh(cmd *cobra.Command, args []string) error {
 func printSnapshot(s gitlab.Snapshot) {
 	fmt.Printf("Snapshot @ %s — %d project(s) polled\n", s.UpdatedAt.Format("15:04:05"), s.Projects)
 
+	fmt.Printf("\n[current · active pipelines: %d]\n", len(s.Current))
+	for _, ap := range s.Current {
+		printActive(ap, 0)
+	}
+
 	fmt.Printf("\n[running pipelines: %d]\n", len(s.RunningPipelines))
 	for _, p := range head(s.RunningPipelines, 10) {
 		fmt.Printf("  %-30s %-18s %-9s  %s\n", format.Trunc(p.ProjectPath, 30), format.Trunc(p.Ref, 18), p.Status, format.Elapsed(p.Started, p.Created))
@@ -112,6 +118,30 @@ func printSnapshot(s gitlab.Snapshot) {
 		for _, e := range s.Errors {
 			fmt.Printf("  - %s\n", e)
 		}
+	}
+}
+
+// printActive renders one active-pipeline subtree indented by depth: the
+// pipeline, then its jobs, then each downstream child pipeline recursively.
+func printActive(ap gitlab.ActivePipeline, depth int) {
+	indent := strings.Repeat("  ", depth)
+	done, total := ap.Progress()
+	when := format.Elapsed(ap.Started, ap.Created)
+	if ap.Status.IsFinished() {
+		when = format.Duration(ap.Duration)
+	}
+	fmt.Printf("  %s%-40s %-16s %-9s %8s  %d/%d\n",
+		indent, format.Trunc(format.Base(ap.ProjectPath)+" · "+ap.Ref, 40), "", ap.Status, when, done, total)
+	for _, j := range ap.Jobs {
+		jwhen := format.Elapsed(j.Started, j.Created)
+		if j.Status.IsFinished() {
+			jwhen = format.Duration(j.Duration)
+		}
+		fmt.Printf("  %s  %-38s %-16s %-9s %8s\n",
+			indent, format.Trunc(j.Stage+" · "+j.Name, 38), format.Trunc(j.Runner, 16), j.Status, jwhen)
+	}
+	for _, c := range ap.Children {
+		printActive(c, depth+1)
 	}
 }
 

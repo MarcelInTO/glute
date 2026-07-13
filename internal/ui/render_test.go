@@ -43,6 +43,7 @@ func newSampleDashboard() *Dashboard {
 	snap := gitlab.SampleSnapshot()
 	d := NewDashboard(gitlab.FakeService{Snap: snap}, Options{Title: "sample data"})
 	d.snapshot = snap
+	d.current.update(snap)
 	d.pipelines.update(snap)
 	d.jobs.update(snap)
 	d.updateHeader()
@@ -50,8 +51,60 @@ func newSampleDashboard() *Dashboard {
 	return d
 }
 
+func TestDashboardRendersCurrentTab(t *testing.T) {
+	d := newSampleDashboard() // Current is the default (first) tab
+	out := renderToText(t, d, 130, 32)
+	t.Logf("Current tab:\n%s", out)
+
+	for _, want := range []string{"glute", "Current", "active pipelines", "unit-tests", "integration-tests", "RUNNER", "shared-linux-02"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("current render missing %q", want)
+		}
+	}
+	// The downstream child pipeline is shown, marked and indented under its root.
+	if !strings.Contains(out, "↳") {
+		t.Errorf("current render missing the downstream child marker")
+	}
+}
+
+func TestCurrentTabAppliesRunnerAliases(t *testing.T) {
+	snap := gitlab.SampleSnapshot()
+	d := NewDashboard(gitlab.FakeService{Snap: snap}, Options{
+		Title:         "sample data",
+		RunnerAliases: map[string]string{"shared-linux-02": "lnx-2"},
+	})
+	d.current.update(snap)
+	out := renderToText(t, d, 130, 32)
+	t.Logf("Current tab (aliased):\n%s", out)
+
+	if !strings.Contains(out, "lnx-2") {
+		t.Errorf("aliased runner name %q not shown", "lnx-2")
+	}
+	if strings.Contains(out, "shared-linux-02") {
+		t.Errorf("aliased runner should not show its full name")
+	}
+	// A runner without an alias keeps its real name.
+	if !strings.Contains(out, "docker-builder") {
+		t.Errorf("unaliased runner should show its real name")
+	}
+}
+
+func TestCurrentSelectionRevealsFullPath(t *testing.T) {
+	d := newSampleDashboard()
+	_ = renderToText(t, d, 130, 32) // draw once so the table has data rows
+
+	// Row 1 is the first pipeline (acme/payments/api); the header is row 0.
+	if path, ok := d.current.pathAtRow(1); !ok || path != "acme/payments/api" {
+		t.Fatalf("pathAtRow(1) = (%q, %v), want acme/payments/api", path, ok)
+	}
+	if _, ok := d.current.pathAtRow(0); ok {
+		t.Errorf("the header row should reveal no path")
+	}
+}
+
 func TestDashboardRendersPipelinesTab(t *testing.T) {
 	d := newSampleDashboard()
+	d.selectTab(1)
 	out := renderToText(t, d, 130, 32)
 	t.Logf("Pipelines tab:\n%s", out)
 
@@ -68,6 +121,7 @@ func TestDashboardRendersPipelinesTab(t *testing.T) {
 
 func TestHoverRevealsFullPath(t *testing.T) {
 	d := newSampleDashboard()
+	d.selectTab(1)                  // Pipelines
 	_ = renderToText(t, d, 130, 32) // draw once so GetInnerRect is populated
 
 	ix, iy, _, _ := d.pipelines.running.table.GetInnerRect()
@@ -81,7 +135,7 @@ func TestHoverRevealsFullPath(t *testing.T) {
 
 func TestDashboardRendersJobsTab(t *testing.T) {
 	d := newSampleDashboard()
-	d.selectTab(1)
+	d.selectTab(2)
 	out := renderToText(t, d, 130, 32)
 	t.Logf("Jobs tab:\n%s", out)
 

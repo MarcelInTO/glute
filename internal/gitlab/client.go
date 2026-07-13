@@ -286,12 +286,23 @@ func mapJob(j *glab.Job) Job {
 		PipelineID:    j.Pipeline.ID,
 		WebURL:        j.WebURL,
 		FailureReason: j.FailureReason,
+		Runner:        runnerName(j.Runner),
 		Created:       derefTime(j.CreatedAt),
 		Started:       derefTime(j.StartedAt),
 		Finished:      derefTime(j.FinishedAt),
 		Duration:      secondsToDuration(j.Duration),
 		Queued:        secondsToDuration(j.QueuedDuration),
 	}
+}
+
+// runnerName picks the human-facing label for a job's runner: GitLab shows the
+// runner's description in its UI, so prefer that, falling back to the name (and
+// "" when no runner is assigned yet, e.g. a still-queued job).
+func runnerName(r glab.JobRunner) string {
+	if r.Description != "" {
+		return r.Description
+	}
+	return r.Name
 }
 
 func derefTime(t *time.Time) time.Time {

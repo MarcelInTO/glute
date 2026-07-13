@@ -36,6 +36,11 @@ type Config struct {
 	RecentWindow    Duration  `toml:"recent_window"` // "recent failures & successes" lookback
 	TopWindow       Duration  `toml:"top_window"`    // "top … last month" lookback
 	Products        []Product `toml:"product,omitempty"`
+	// RunnerAliases maps a runner's full name (its GitLab description) to a
+	// shorter label for display; runners not listed show their real name. It's a
+	// display-only remap (the data layer keeps the true name), handy because
+	// runner descriptions are long and change rarely.
+	RunnerAliases map[string]string `toml:"runner_aliases,omitempty"`
 }
 
 // Product is a user-defined grouping of GitLab groups and/or projects (repos)
@@ -179,6 +184,9 @@ func Save(instance string, cfg Config) error {
 	if len(cfg.Products) == 0 {
 		buf.WriteString(productExample)
 	}
+	if len(cfg.RunnerAliases) == 0 {
+		buf.WriteString(runnerAliasExample)
+	}
 
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), buf.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("writing config: %w", err)
@@ -230,4 +238,13 @@ const productExample = `
 # name     = "Payments"
 # groups   = ["org/payments"]
 # projects = ["org/legacy-gateway"]
+`
+
+const runnerAliasExample = `
+# Shorten long runner names for display. Map each runner's full name (as GitLab
+# reports it) to a short label; runners not listed keep their real name.
+#
+# [runner_aliases]
+# "shared-gitlab-runner-linux-x86-64-prod-01" = "linux-01"
+# "macos-m2-signing-runner"                   = "mac-sign"
 `
