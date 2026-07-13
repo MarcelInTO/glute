@@ -104,4 +104,11 @@ stays trivial.
   row's full project path in the footer via a mouse-motion capture (falls back to
   click).
 - A TUI owns the screen, so logs go to `<instance dir>/glute.log`, never stdout.
+- **Diagnosing a hang:** `kill -USR1 <pid>` dumps every goroutine's stack to
+  `glute.log` (`watchDumpSignal` in `app.go`; SIGUSR1 is Unix-only, no-op on
+  Windows via the `dumpsignal_*` build-tag split). Preferred over SIGQUIT (which
+  writes to stderr, i.e. the raw-mode terminal) and over a debugger, since
+  `ptrace_scope=1` blocks attaching to a non-child process. If glute wedges,
+  grab a dump *before* killing it — a wedged TUI is unresponsive to keys and
+  Ctrl-C because the event loop itself is stuck.
 - Muted text uses `silver` (not `gray`) so it stays legible on dark terminals.

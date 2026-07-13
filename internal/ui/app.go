@@ -8,7 +8,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -156,6 +158,7 @@ func (d *Dashboard) Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	go watchDumpSignal(ctx)
 	go d.refreshLoop(ctx)
 	d.triggerRefresh()
 	d.updateHeader()
@@ -405,6 +408,45 @@ func (d *Dashboard) updateFooter() {
 	}
 
 	d.footer.SetText(fmt.Sprintf(" %s%s%s    %s", status, trailer, title, hints))
+}
+
+// watchDumpSignal writes every goroutine's stack to the log whenever a dump
+// signal (SIGUSR1 on Unix) arrives, so a wedged glute can be diagnosed with
+// `kill -USR1 <pid>` — the trace lands in glute.log without disturbing the
+// screen and without needing a debugger (ptrace attach is often restricted).
+// On platforms with no dump signal (Windows) it does nothing. SIGQUIT still
+// triggers the Go runtime's own crash-dump to stderr as a fallback.
+func watchDumpSignal(ctx context.Context) {
+	if len(dumpSignals) == 0 {
+		return
+	}
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, dumpSignals...)
+	defer signal.Stop(ch)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case sig := <-ch:
+			dumpGoroutines(sig)
+		}
+	}
+}
+
+// dumpGoroutines logs the stacks of all goroutines. The buffer grows until the
+// whole dump fits, since runtime.Stack truncates to what's given.
+func dumpGoroutines(sig os.Signal) {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	log.Printf("=== goroutine dump on %s (%d goroutines) ===\n%s=== end goroutine dump ===",
+		sig, runtime.NumGoroutine(), buf)
 }
 
 // setupLogging points the standard logger at the given file, since a TUI owns
