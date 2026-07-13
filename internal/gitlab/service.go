@@ -102,13 +102,16 @@ func SampleSnapshot() Snapshot {
 		{
 			Pipeline: running[0], // acme/payments/api · main · running
 			Jobs: []Job{
+				// Job IDs ascend with stage/creation order (build < test), as real
+				// GitLab assigns them, so the Current tree lists stages in
+				// execution order (see sortPipelineJobs).
 				{ID: 5111, Name: "compile", Stage: "build", Status: StatusSuccess,
 					ProjectPath: "acme/payments/api", PipelineID: 101, Runner: "shared-linux-01",
 					Started: now.Add(-90 * time.Second), Finished: now.Add(-45 * time.Second), Duration: 45 * time.Second},
-				{ID: 5101, Name: "unit-tests", Stage: "test", Status: StatusRunning,
-					ProjectPath: "acme/payments/api", PipelineID: 101, Runner: "shared-linux-02", Started: now.Add(-42 * time.Second)},
 				{ID: 5112, Name: "integration-tests", Stage: "test", Status: StatusPending,
 					ProjectPath: "acme/payments/api", PipelineID: 101, Created: now.Add(-42 * time.Second)},
+				{ID: 5113, Name: "unit-tests", Stage: "test", Status: StatusRunning,
+					ProjectPath: "acme/payments/api", PipelineID: 101, Runner: "shared-linux-02", Started: now.Add(-42 * time.Second)},
 			},
 			Children: []ActivePipeline{
 				{

@@ -111,8 +111,8 @@ func topPipelines(pipes []Pipeline, limit int) []PipelineAgg {
 // the pipeline store (where child pipelines were dropped); child metadata and the
 // parent→child edges are supplied from the retained tree that the job walk
 // learns. Jobs attach to their pipeline by PipelineID; each node's jobs are
-// sorted by stage then start so same-stage jobs group visually. Children are
-// ordered by start time. A visited set guards against a malformed edge cycle.
+// ordered as the UI shows them (see sortPipelineJobs). Children are ordered by
+// start time. A visited set guards against a malformed edge cycle.
 func activePipelines(roots []Pipeline, jobs []Job, childPipes map[int64]Pipeline, childParent map[int64]int64) []ActivePipeline {
 	jobsByPipe := map[int64][]Job{}
 	for _, j := range jobs {
@@ -156,18 +156,29 @@ func activePipelines(roots []Pipeline, jobs []Job, childPipes map[int64]Pipeline
 	return out
 }
 
-// sortPipelineJobs orders a pipeline's jobs by stage, then start time, then name,
-// so the Current tab lists a pipeline's jobs grouped by stage in a stable order.
+// sortPipelineJobs orders a pipeline's jobs the way the GitLab UI shows them —
+// by stage in execution order, then by name within a stage. The jobs API
+// carries no stage index, but GitLab creates a pipeline's jobs stage by stage,
+// so the lowest job ID in a stage tracks that stage's position in the pipeline
+// (earlier stages were created first, so they hold lower IDs). Ranking stages by
+// that minimum keeps them in execution order instead of alphabetical; within a
+// stage jobs run in parallel, so they're ordered by name (ID breaks ties).
 func sortPipelineJobs(jobs []Job) []Job {
 	out := append([]Job(nil), jobs...)
+	stageRank := map[string]int64{}
+	for _, j := range out {
+		if r, ok := stageRank[j.Stage]; !ok || j.ID < r {
+			stageRank[j.Stage] = j.ID
+		}
+	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].Stage != out[j].Stage {
-			return out[i].Stage < out[j].Stage
+		if ri, rj := stageRank[out[i].Stage], stageRank[out[j].Stage]; ri != rj {
+			return ri < rj
 		}
-		if !jobStart(out[i]).Equal(jobStart(out[j])) {
-			return jobStart(out[i]).Before(jobStart(out[j]))
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
 		}
-		return out[i].Name < out[j].Name
+		return out[i].ID < out[j].ID
 	})
 	return out
 }

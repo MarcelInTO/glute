@@ -102,9 +102,14 @@ func TestActivePipelinesBuildsTree(t *testing.T) {
 		{ID: 2, ProjectPath: "a/y", Ref: "main", Status: StatusSuccess}, // finished root -> excluded
 	}
 	jobs := []Job{
-		// Root 1's own jobs, out of stage order to exercise the sort.
+		// Root 1's own jobs, shuffled. Stages build/test/deploy do NOT sort
+		// alphabetically into execution order (that would be build, deploy,
+		// test), so the sort must rank stages by their creation-order IDs, not
+		// their names. Two test-stage jobs also check within-stage name order.
 		{ID: 11, PipelineID: 1, Name: "unit", Stage: "test", Status: StatusRunning, Started: now.Add(-time.Minute)},
 		{ID: 10, PipelineID: 1, Name: "compile", Stage: "build", Status: StatusSuccess, Duration: 30 * time.Second},
+		{ID: 12, PipelineID: 1, Name: "publish", Stage: "deploy", Status: StatusPending},
+		{ID: 13, PipelineID: 1, Name: "integration", Stage: "test", Status: StatusPending},
 		// Child pipeline 3's job.
 		{ID: 30, PipelineID: 3, Name: "deploy", Stage: "deploy", Status: StatusPending},
 		// A job of the excluded finished root, which must not surface.
@@ -123,9 +128,17 @@ func TestActivePipelinesBuildsTree(t *testing.T) {
 	if root.ID != 1 {
 		t.Fatalf("want root pipeline 1, got %d", root.ID)
 	}
-	// Jobs sorted by stage: build before test.
-	if len(root.Jobs) != 2 || root.Jobs[0].Stage != "build" || root.Jobs[1].Stage != "test" {
-		t.Errorf("root jobs not sorted by stage: %+v", root.Jobs)
+	// Jobs come out in the UI's order: stages in execution order (build, test,
+	// deploy — not the alphabetical build, deploy, test), and by name within a
+	// stage (integration before unit).
+	wantOrder := []string{"compile", "integration", "unit", "publish"}
+	if len(root.Jobs) != len(wantOrder) {
+		t.Fatalf("want %d jobs, got %d: %+v", len(wantOrder), len(root.Jobs), root.Jobs)
+	}
+	for i, name := range wantOrder {
+		if root.Jobs[i].Name != name {
+			t.Errorf("job %d = %q, want %q (execution order): %+v", i, root.Jobs[i].Name, name, root.Jobs)
+		}
 	}
 	// Child nested with its own job, tagged with its own project path.
 	if len(root.Children) != 1 || root.Children[0].ID != 3 || root.Children[0].ProjectPath != "a/deploy" {
@@ -134,9 +147,10 @@ func TestActivePipelinesBuildsTree(t *testing.T) {
 	if len(root.Children[0].Jobs) != 1 || root.Children[0].Jobs[0].Name != "deploy" {
 		t.Errorf("child job missing: %+v", root.Children[0].Jobs)
 	}
-	// Progress spans the whole subtree: 1 of 3 jobs finished (compile).
-	if done, total := root.Progress(); done != 1 || total != 3 {
-		t.Errorf("subtree progress: want 1/3, got %d/%d", done, total)
+	// Progress spans the whole subtree: 1 of 5 jobs finished (compile) — root 1's
+	// four own jobs plus child pipeline 3's one.
+	if done, total := root.Progress(); done != 1 || total != 5 {
+		t.Errorf("subtree progress: want 1/5, got %d/%d", done, total)
 	}
 }
 
