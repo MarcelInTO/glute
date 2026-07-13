@@ -39,6 +39,24 @@ panels from the Pipelines/Jobs tabs and replace them with optimization-oriented
 stats (which pipelines/jobs are slow, run too often, fail too often, wait too
 long for runners). All tests pass; not yet committed.
 
+As of 2026-07-13 (committed + pushed to `main`): the Current tab's TIME column
+now renders fixed-width `hh:mm:ss` (leading zero fields blanked to spaces) via
+`format.HMS`, the default refresh interval dropped 30s→10s (warm refreshes are
+sub-second), and a one-second UI tick counts the running timers up smoothly
+between refreshes (`currentView.tick`, `89ffbb1`). Added a **goroutine-dump
+diagnostic**: `kill -USR1 <pid>` writes all stacks to `glute.log`
+(`watchDumpSignal`, `0ebc611`).
+
+**KNOWN ISSUE (unresolved):** glute has hit an **intermittent 100%-CPU hang** —
+unresponsive to keys and Ctrl-C, no redraw. Seen once on the `b7eb264` build
+(pre-timer-work, so not caused by it), after ~1h idle with 0 running pipelines;
+exactly one goroutine spinning (likely the tview/tcell event loop, with the
+refresh goroutine then blocked on `QueueUpdateDraw`). Root cause unknown — no
+live trace was capturable (`ptrace_scope=1` blocks gdb/dlv attach to a
+non-child). **If it recurs: `kill -USR1 <pid>` first, then read the dump in
+`glute.log` before killing.** A killed run leaves the terminal in raw mode — run
+`reset` to restore it.
+
 **Why:** Records live status and next-steps that aren't obvious from the code.
 
 **How to apply:**
