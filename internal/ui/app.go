@@ -75,7 +75,7 @@ type Dashboard struct {
 // NewDashboard builds (but does not start) the dashboard.
 func NewDashboard(svc gitlab.Service, opts Options) *Dashboard {
 	if opts.RefreshInterval <= 0 {
-		opts.RefreshInterval = 30 * time.Second
+		opts.RefreshInterval = 10 * time.Second
 	}
 
 	current := newCurrentView(opts.RunnerAliases)
@@ -309,8 +309,10 @@ func (d *Dashboard) triggerRefresh() {
 func (d *Dashboard) refreshLoop(ctx context.Context) {
 	data := time.NewTicker(d.opts.RefreshInterval)
 	defer data.Stop()
-	foot := time.NewTicker(time.Second) // keeps the "updated Ns ago" fresh
-	defer foot.Stop()
+	// A one-second tick counts the running timers up between data refreshes and
+	// keeps the footer's "updated Ns ago" fresh.
+	sec := time.NewTicker(time.Second)
+	defer sec.Stop()
 
 	for {
 		select {
@@ -320,8 +322,11 @@ func (d *Dashboard) refreshLoop(ctx context.Context) {
 			d.doRefresh(ctx)
 		case <-data.C:
 			d.doRefresh(ctx)
-		case <-foot.C:
-			d.app.QueueUpdateDraw(d.updateFooter)
+		case <-sec.C:
+			d.app.QueueUpdateDraw(func() {
+				d.current.tick()
+				d.updateFooter()
+			})
 		}
 	}
 }

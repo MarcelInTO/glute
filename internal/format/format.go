@@ -41,6 +41,41 @@ func Elapsed(started, created time.Time) string {
 	return Ago(created)
 }
 
+// ElapsedSince returns how long since work began, preferring started over
+// created, clamped at zero. It returns zero when neither time is known.
+func ElapsedSince(started, created time.Time) time.Duration {
+	t := started
+	if t.IsZero() {
+		t = created
+	}
+	if t.IsZero() {
+		return 0
+	}
+	return max(time.Since(t), 0)
+}
+
+// HMS renders a duration as hh:mm:ss, blanking any leading zero fields (and
+// their colons) to spaces so a column of these lines up on the right. Every
+// value is 8 characters wide (e.g. " 1:02:03", "    5:09", "      42"). A
+// non-positive duration renders as an em dash.
+func HMS(d time.Duration) string {
+	if d <= 0 {
+		return "—"
+	}
+	total := int(d / time.Second)
+	h := total / 3600
+	m := (total % 3600) / 60
+	s := total % 60
+	switch {
+	case h > 0:
+		return fmt.Sprintf("%2d:%02d:%02d", h, m, s)
+	case m > 0:
+		return fmt.Sprintf("   %2d:%02d", m, s)
+	default:
+		return fmt.Sprintf("      %2d", s)
+	}
+}
+
 // Trunc shortens s to at most n runes, adding an ellipsis when it cuts.
 func Trunc(s string, n int) string {
 	r := []rune(s)

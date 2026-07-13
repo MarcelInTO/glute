@@ -51,7 +51,7 @@ stored separately (`token`, 0600) beside the config, or supplied via the
 
 ```toml
 gitlab_url       = "https://gitlab.example.com"
-refresh_interval = "30s"
+refresh_interval = "10s"
 recent_window    = "24h0m0s"        # "recent failures & successes" lookback
 top_window       = "720h0m0s"       # "top … last month" lookback (30d)
 # ca_cert = "/path/to/corp-ca.pem"  # optional, for a self-managed CA

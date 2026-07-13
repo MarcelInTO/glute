@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/MarcelInTO/glute/internal/format"
 	"github.com/MarcelInTO/glute/internal/gitlab"
@@ -20,6 +21,7 @@ type currentView struct {
 	root    *tview.Flex
 	table   *tview.Table
 	paths   []string          // full project path per data row, indexed by (tableRow - 1)
+	rows    []curRow          // last-rendered rows, so tick can re-time the live ones
 	aliases map[string]string // runner full name → short display label
 }
 
@@ -51,10 +53,25 @@ type curRow struct {
 	child    bool // pipeline row that is a downstream child (not a root)
 	label    string
 	status   gitlab.Status
-	runner   string // job's runner (empty for pipeline rows / unassigned jobs)
-	when     string
+	runner   string        // job's runner (empty for pipeline rows / unassigned jobs)
+	started  time.Time     // for the live TIME column (running rows)
+	created  time.Time     // fallback start when Started is unknown
+	duration time.Duration // total duration, for finished rows
 	progress string
 	path     string // full project path, for the footer reveal
+}
+
+// live reports whether this row's TIME still ticks (i.e. it hasn't finished).
+func (r curRow) live() bool { return !r.status.IsFinished() }
+
+// when renders the TIME column: elapsed-since-start while the row is live (so it
+// counts up between refreshes), or the fixed total duration once finished. Both
+// go through format.HMS so the column lines up.
+func (r curRow) when() string {
+	if r.live() {
+		return format.HMS(format.ElapsedSince(r.started, r.created))
+	}
+	return format.HMS(r.duration)
 }
 
 func (v *currentView) update(s gitlab.Snapshot) {
@@ -64,6 +81,7 @@ func (v *currentView) update(s gitlab.Snapshot) {
 	v.paths = v.paths[:0]
 
 	rows := flattenActive(s.Current)
+	v.rows = rows
 	if len(rows) == 0 {
 		none := tview.NewTableCell("(nothing running)")
 		none.SetTextColor(tcell.ColorSilver)
@@ -90,7 +108,7 @@ func (v *currentView) update(s gitlab.Snapshot) {
 		t.SetCell(row, 0, name)
 		t.SetCell(row, 1, curStatusCell(r.status))
 		t.SetCell(row, 2, curTextCell(format.Trunc(v.displayRunner(r.runner), 24)))
-		t.SetCell(row, 3, curNumCell(r.when))
+		t.SetCell(row, 3, curNumCell(r.when()))
 		t.SetCell(row, 4, curNumCell(r.progress))
 		v.paths = append(v.paths, r.path)
 	}
@@ -100,6 +118,21 @@ func (v *currentView) update(s gitlab.Snapshot) {
 		t.Select(len(rows), 0)
 	} else if sr < 1 {
 		t.Select(1, 0)
+	}
+}
+
+// tick re-times only the live rows' TIME cells, so the elapsed counters count
+// up smoothly between refreshes. It touches nothing else — the selection, the
+// scroll offset, and every other cell stay put — so it's safe to call every
+// second even while the user is scrolling.
+func (v *currentView) tick() {
+	for i, r := range v.rows {
+		if !r.live() {
+			continue // finished rows have a fixed duration; leave them alone
+		}
+		if cell := v.table.GetCell(i+1, 3); cell != nil {
+			cell.SetText(r.when())
+		}
 	}
 }
 
@@ -137,18 +170,22 @@ func flattenActive(aps []gitlab.ActivePipeline) []curRow {
 			child:    isChild,
 			label:    label,
 			status:   ap.Status,
-			when:     pipeWhen(ap.Pipeline),
+			started:  ap.Started,
+			created:  ap.Created,
+			duration: ap.Duration,
 			progress: progress,
 			path:     ap.ProjectPath,
 		})
 		for _, j := range ap.Jobs {
 			rows = append(rows, curRow{
-				depth:  depth + 1,
-				label:  j.Stage + " · " + j.Name,
-				status: j.Status,
-				runner: j.Runner,
-				when:   jobWhen(j),
-				path:   ap.ProjectPath,
+				depth:    depth + 1,
+				label:    j.Stage + " · " + j.Name,
+				status:   j.Status,
+				runner:   j.Runner,
+				started:  j.Started,
+				created:  j.Created,
+				duration: j.Duration,
+				path:     ap.ProjectPath,
 			})
 		}
 		for _, c := range ap.Children {
@@ -159,23 +196,6 @@ func flattenActive(aps []gitlab.ActivePipeline) []curRow {
 		walk(ap, 0, false)
 	}
 	return rows
-}
-
-// pipeWhen shows elapsed-since-start while a pipeline runs, or its total duration
-// once finished (a finished child under a still-running root).
-func pipeWhen(p gitlab.Pipeline) string {
-	if p.Status.IsFinished() {
-		return format.Duration(p.Duration)
-	}
-	return format.Elapsed(p.Started, p.Created)
-}
-
-// jobWhen mirrors pipeWhen for a job: elapsed while active, total once finished.
-func jobWhen(j gitlab.Job) string {
-	if j.Status.IsFinished() {
-		return format.Duration(j.Duration)
-	}
-	return format.Elapsed(j.Started, j.Created)
 }
 
 // currentCols is the number of columns in the Current table.

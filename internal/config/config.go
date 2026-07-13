@@ -70,7 +70,7 @@ func (d *Duration) UnmarshalText(text []byte) error {
 
 func defaultConfig() Config {
 	return Config{
-		RefreshInterval: Duration(30 * time.Second),
+		RefreshInterval: Duration(10 * time.Second),
 		RecentWindow:    Duration(24 * time.Hour),
 		TopWindow:       Duration(30 * 24 * time.Hour),
 	}

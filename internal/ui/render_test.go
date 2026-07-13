@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MarcelInTO/glute/internal/gitlab"
 	"github.com/gdamore/tcell/v2"
@@ -99,6 +100,53 @@ func TestCurrentSelectionRevealsFullPath(t *testing.T) {
 	}
 	if _, ok := d.current.pathAtRow(0); ok {
 		t.Errorf("the header row should reveal no path")
+	}
+}
+
+// TestCurrentTickReTimesOnlyLiveRows checks that the per-second tick rewrites
+// the TIME cell of running rows (so counters count up between refreshes) while
+// leaving finished rows' fixed durations untouched.
+func TestCurrentTickReTimesOnlyLiveRows(t *testing.T) {
+	v := newCurrentView(nil)
+	now := time.Now()
+	snap := gitlab.Snapshot{Current: []gitlab.ActivePipeline{{
+		Pipeline: gitlab.Pipeline{
+			ProjectPath: "acme/api", Ref: "main", Status: gitlab.StatusRunning,
+			Started: now.Add(-90 * time.Second),
+		},
+		Jobs: []gitlab.Job{
+			{Stage: "build", Name: "compile", Status: gitlab.StatusSuccess, Duration: 45 * time.Second},
+			{Stage: "test", Name: "unit", Status: gitlab.StatusRunning, Started: now.Add(-30 * time.Second)},
+		},
+	}}}
+	v.update(snap)
+
+	// Rows: 0 header, 1 pipeline (live), 2 finished job, 3 running job.
+	const timeCol = 3
+	pipeCell := v.table.GetCell(1, timeCol)
+	doneCell := v.table.GetCell(2, timeCol)
+	liveCell := v.table.GetCell(3, timeCol)
+
+	doneBefore := doneCell.Text
+	// Sentinels prove which cells tick() rewrites and which it leaves alone.
+	pipeCell.SetText("SENTINEL")
+	liveCell.SetText("SENTINEL")
+	doneCell.SetText("FIXED")
+
+	v.tick()
+
+	if pipeCell.Text == "SENTINEL" {
+		t.Errorf("tick did not re-time the running pipeline row")
+	}
+	if liveCell.Text == "SENTINEL" {
+		t.Errorf("tick did not re-time the running job row")
+	}
+	if doneCell.Text != "FIXED" {
+		t.Errorf("tick rewrote a finished row's TIME cell (%q); it should be left alone", doneCell.Text)
+	}
+	// The finished job's duration is fixed at 45s regardless of the tick.
+	if want := "     45"; !strings.HasSuffix(doneBefore, "45") || strings.TrimSpace(doneBefore) != strings.TrimSpace(want) {
+		t.Errorf("finished job TIME = %q, want 45s duration", doneBefore)
 	}
 }
 
