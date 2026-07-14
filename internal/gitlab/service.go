@@ -40,13 +40,13 @@ func SampleSnapshot() Snapshot {
 
 	running := []Pipeline{
 		{ID: 101, ProjectPath: "acme/payments/api", Ref: "main", Status: StatusRunning,
-			Source: "push", WebURL: url("acme/payments/api", 101),
+			Source: "push", User: "jchen", WebURL: url("acme/payments/api", 101),
 			Started: now.Add(-90 * time.Second), Created: now.Add(-95 * time.Second)},
 		{ID: 102, ProjectPath: "acme/payments/web", Ref: "release/2.1", Status: StatusRunning,
-			Source: "merge_request_event", WebURL: url("acme/payments/web", 102),
+			Source: "merge_request_event", User: "priya", WebURL: url("acme/payments/web", 102),
 			Started: now.Add(-6 * time.Minute), Created: now.Add(-6 * time.Minute)},
 		{ID: 103, ProjectPath: "acme/platform/gateway", Ref: "main", Status: StatusPending,
-			Source: "schedule", WebURL: url("acme/platform/gateway", 103),
+			Source: "schedule", User: "release-bot", WebURL: url("acme/platform/gateway", 103),
 			Created: now.Add(-20 * time.Second)},
 	}
 
@@ -116,7 +116,7 @@ func SampleSnapshot() Snapshot {
 			Children: []ActivePipeline{
 				{
 					Pipeline: Pipeline{ID: 201, ProjectPath: "acme/payments/deploy", Ref: "main",
-						Status: StatusPending, Source: sourceParentPipeline, Created: now.Add(-30 * time.Second)},
+						Status: StatusPending, Source: sourceParentPipeline, User: "jchen", Created: now.Add(-30 * time.Second)},
 					Jobs: []Job{
 						{ID: 5201, Name: "deploy-staging", Stage: "deploy", Status: StatusPending,
 							ProjectPath: "acme/payments/deploy", PipelineID: 201, Created: now.Add(-30 * time.Second)},

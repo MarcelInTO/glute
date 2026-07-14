@@ -378,9 +378,14 @@ func dropChildPipelines(pipes []Pipeline) []Pipeline {
 // incoming (list-derived) copy lacks one, so a detail lookup skipped by the
 // MaxDetailFetch cap never drops timing we already had.
 func (p *Poller) upsertPipe(pi Pipeline) {
-	if pi.Duration == 0 {
-		if old, ok := p.pipes[pi.ID]; ok && old.Duration > 0 {
+	if old, ok := p.pipes[pi.ID]; ok {
+		if pi.Duration == 0 && old.Duration > 0 {
 			applyDetail(&pi, old)
+		}
+		// The triggering user is immutable, but the list endpoint (and a skipped
+		// or failed detail fetch) leaves it blank; keep a value we already learned.
+		if pi.User == "" && old.User != "" {
+			pi.User = old.User
 		}
 	}
 	p.pipes[pi.ID] = pi
@@ -689,4 +694,5 @@ func applyDetail(dst *Pipeline, detail Pipeline) {
 	dst.Duration = detail.Duration
 	dst.Started = detail.Started
 	dst.Finished = detail.Finished
+	dst.User = detail.User // the list endpoint omits the user; the detail one carries it
 }

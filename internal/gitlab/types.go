@@ -62,6 +62,7 @@ type Pipeline struct {
 	SHA         string
 	Status      Status
 	Source      string
+	User        string // username of whoever triggered the pipeline ("" if unknown)
 	WebURL      string
 	Created     time.Time
 	Updated     time.Time

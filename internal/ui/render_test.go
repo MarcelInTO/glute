@@ -57,7 +57,7 @@ func TestDashboardRendersCurrentTab(t *testing.T) {
 	out := renderToText(t, d, 130, 32)
 	t.Logf("Current tab:\n%s", out)
 
-	for _, want := range []string{"glute", "Current", "active pipelines", "unit-tests", "integration-tests", "RUNNER", "shared-linux-02"} {
+	for _, want := range []string{"glute", "Current", "active pipelines", "unit-tests", "integration-tests", "RUNNER", "shared-linux-02", "USER", "jchen", "priya"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("current render missing %q", want)
 		}
@@ -122,7 +122,7 @@ func TestCurrentTickReTimesOnlyLiveRows(t *testing.T) {
 	v.update(snap)
 
 	// Rows: 0 header, 1 pipeline (live), 2 finished job, 3 running job.
-	const timeCol = 3
+	const timeCol = curColTime
 	pipeCell := v.table.GetCell(1, timeCol)
 	doneCell := v.table.GetCell(2, timeCol)
 	liveCell := v.table.GetCell(3, timeCol)

@@ -201,6 +201,7 @@ const pipelineJobsQuery = `query PipelineJobs($path: ID!, $iid: ID!, $cursor: St
       startedAt
       finishedAt
       duration
+      user { username }
       jobs(first: 100, after: $cursor) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -262,7 +263,10 @@ type gqlPipelineNode struct {
 	StartedAt  *time.Time `json:"startedAt"`
 	FinishedAt *time.Time `json:"finishedAt"`
 	Duration   *float64   `json:"duration"`
-	Jobs       struct {
+	User       *struct {
+		Username string `json:"username"`
+	} `json:"user"`
+	Jobs struct {
 		PageInfo struct {
 			HasNextPage bool   `json:"hasNextPage"`
 			EndCursor   string `json:"endCursor"`
@@ -355,7 +359,7 @@ func collectPipelineNode(pn *gqlPipelineNode, projectPath string, scopeSet map[S
 }
 
 func mapGQLPipeline(pn *gqlPipelineNode, projectPath string) Pipeline {
-	return Pipeline{
+	pipe := Pipeline{
 		ID:          parseGID(pn.ID),
 		ProjectPath: projectPath,
 		Ref:         pn.Ref,
@@ -365,6 +369,10 @@ func mapGQLPipeline(pn *gqlPipelineNode, projectPath string) Pipeline {
 		Finished:    derefTime(pn.FinishedAt),
 		Duration:    secondsPtr(pn.Duration),
 	}
+	if pn.User != nil {
+		pipe.User = pn.User.Username
+	}
+	return pipe
 }
 
 func mapGQLJob(n *gqlJobNode, projectPath string, pipelineID int64) Job {
@@ -463,6 +471,7 @@ func mapPipelineDetail(projectID int64, p *glab.Pipeline) Pipeline {
 		SHA:       p.SHA,
 		Status:    Status(p.Status),
 		Source:    string(p.Source),
+		User:      basicUserName(p.User),
 		WebURL:    p.WebURL,
 		Created:   derefTime(p.CreatedAt),
 		Updated:   derefTime(p.UpdatedAt),
@@ -470,6 +479,15 @@ func mapPipelineDetail(projectID int64, p *glab.Pipeline) Pipeline {
 		Finished:  derefTime(p.FinishedAt),
 		Duration:  time.Duration(p.Duration) * time.Second,
 	}
+}
+
+// basicUserName returns a user's username, or "" when unset (the pipeline list
+// endpoint omits the user, and some system-triggered pipelines have none).
+func basicUserName(u *glab.BasicUser) string {
+	if u == nil {
+		return ""
+	}
+	return u.Username
 }
 
 func mapJob(j *glab.Job) Job {

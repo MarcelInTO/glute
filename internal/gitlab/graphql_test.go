@@ -32,6 +32,7 @@ const samplePipelinePayload = `{
     "createdAt": "2026-07-14T13:00:00Z",
     "startedAt": "2026-07-14T13:00:05Z",
     "duration": 42,
+    "user": { "username": "alice" },
     "jobs": {
       "pageInfo": { "hasNextPage": false, "endCursor": "" },
       "nodes": [
@@ -64,6 +65,9 @@ func TestCollectPipelineNodeMapsJobsAndChildren(t *testing.T) {
 	}
 	if pipe.Duration != 42*time.Second {
 		t.Errorf("pipeline duration = %s, want 42s", pipe.Duration)
+	}
+	if pipe.User != "alice" {
+		t.Errorf("pipeline user = %q, want alice", pipe.User)
 	}
 
 	jobs, children := collectPipelineNode(pn, "grp/app", statusSet(jobFetchScopes))

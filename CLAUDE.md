@@ -59,6 +59,12 @@ Keep it CGO-free so cross-compilation stays trivial.
   newly-changed pipelines (cheap once warm; measured ~0s on an idle instance).
 - The pipeline list supports `updated_after` and orders by `updated_at desc`, so
   the incremental delta = "pipelines whose status changed since last refresh."
+- The pipeline **list** also omits the **triggering user** (like `duration`); the
+  **detail** endpoint's `User` and GraphQL's `pipeline.user` carry it, so
+  `Pipeline.User` is filled on the detail-enrich path (roots) and the GraphQL path
+  (children). Since the triggering user is immutable, the store keeps it sticky —
+  a later list-refresh (or a skipped/failed enrich) with a blank user doesn't
+  clear a value already learned (`upsertPipe`).
 - **Jobs use two paths.** The full-window backfill (cold start + periodic
   resync) uses the REST project-wide jobs list (`ListJobs`): it's cheap (~1 page
   per project) and — crucially — *includes child-pipeline jobs*. The warm delta
@@ -116,6 +122,9 @@ Keep it CGO-free so cross-compilation stays trivial.
   stage by stage), then name. `needs` is only available via GraphQL (warm path);
   bulk-fetched jobs have none, so a just-resynced active pipeline uses the stage
   fallback for one refresh until the warm delta repopulates `needs`.
+- The Current tree's **pipeline** rows show a **USER** column — the username that
+  triggered the pipeline, from `Pipeline.User` (blank on job rows, which show
+  RUNNER instead; the two attribution columns sit adjacent and never coincide).
 - The Current tree's job rows show a **RUNNER** column (the job's runner
   description, from `Job.Runner`). Runner descriptions are long, so
   `config.toml`'s optional `[runner_aliases]` table remaps a runner's full name

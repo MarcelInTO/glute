@@ -53,6 +53,7 @@ type curRow struct {
 	child    bool // pipeline row that is a downstream child (not a root)
 	label    string
 	status   gitlab.Status
+	user     string        // triggering user (pipeline rows only)
 	runner   string        // job's runner (empty for pipeline rows / unassigned jobs)
 	started  time.Time     // for the live TIME column (running rows)
 	created  time.Time     // fallback start when Started is unknown
@@ -105,11 +106,12 @@ func (v *currentView) update(s gitlab.Snapshot) {
 		default:
 			name.SetTextColor(tcell.ColorSilver)
 		}
-		t.SetCell(row, 0, name)
-		t.SetCell(row, 1, curStatusCell(r.status))
-		t.SetCell(row, 2, curTextCell(format.Trunc(v.displayRunner(r.runner), 24)))
-		t.SetCell(row, 3, curNumCell(r.when()))
-		t.SetCell(row, 4, curNumCell(r.progress))
+		t.SetCell(row, curColName, name)
+		t.SetCell(row, curColStatus, curStatusCell(r.status))
+		t.SetCell(row, curColUser, curTextCell(format.Trunc(r.user, 16)))
+		t.SetCell(row, curColRunner, curTextCell(format.Trunc(v.displayRunner(r.runner), 24)))
+		t.SetCell(row, curColTime, curNumCell(r.when()))
+		t.SetCell(row, curColDone, curNumCell(r.progress))
 		v.paths = append(v.paths, r.path)
 	}
 
@@ -130,7 +132,7 @@ func (v *currentView) tick() {
 		if !r.live() {
 			continue // finished rows have a fixed duration; leave them alone
 		}
-		if cell := v.table.GetCell(i+1, 3); cell != nil {
+		if cell := v.table.GetCell(i+1, curColTime); cell != nil {
 			cell.SetText(r.when())
 		}
 	}
@@ -170,6 +172,7 @@ func flattenActive(aps []gitlab.ActivePipeline) []curRow {
 			child:    isChild,
 			label:    label,
 			status:   ap.Status,
+			user:     ap.User,
 			started:  ap.Started,
 			created:  ap.Created,
 			duration: ap.Duration,
@@ -198,11 +201,22 @@ func flattenActive(aps []gitlab.ActivePipeline) []curRow {
 	return rows
 }
 
-// currentCols is the number of columns in the Current table.
-const currentCols = 5
+// Current table column indices. USER (who triggered the pipeline) is filled on
+// pipeline rows; RUNNER (where a job ran) is filled on job rows — they never
+// coincide, so they sit adjacent as the row's attribution columns. currentCols
+// is the count (the iota block leaves it as the last value).
+const (
+	curColName = iota
+	curColStatus
+	curColUser
+	curColRunner
+	curColTime
+	curColDone
+	currentCols
+)
 
 // setCurrentHeader writes the Current tab's header, expanding only the name
-// column so the status/runner/time/done columns size to their content.
+// column so the status/user/runner/time/done columns size to their content.
 func setCurrentHeader(t *tview.Table) {
 	cols := []struct {
 		name   string
@@ -211,6 +225,7 @@ func setCurrentHeader(t *tview.Table) {
 	}{
 		{"PIPELINE / JOB", 1, tview.AlignLeft},
 		{"STATUS", 0, tview.AlignLeft},
+		{"USER", 0, tview.AlignLeft},
 		{"RUNNER", 0, tview.AlignLeft},
 		{"TIME", 0, tview.AlignRight},
 		{"DONE", 0, tview.AlignRight},
