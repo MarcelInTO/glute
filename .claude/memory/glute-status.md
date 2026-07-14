@@ -47,7 +47,7 @@ between refreshes (`currentView.tick`, `89ffbb1`). Added a **goroutine-dump
 diagnostic**: `kill -USR1 <pid>` writes all stacks to `glute.log`
 (`watchDumpSignal`, `0ebc611`).
 
-As of 2026-07-14 (implemented + verified; commit pending user OK): the Current
+As of 2026-07-14 (committed + pushed to `main`, `82c6619`): the Current
 tab now orders each pipeline's jobs by **execution order honoring `needs:`
 dependencies**, not stages — many wevr pipelines (esp. dynamically-generated
 child pipelines) drive execution with `needs` and put every job in one stage, so
@@ -62,6 +62,10 @@ falls back to stage order when no `needs`. Bulk/history stays REST. Scope was
 deliberately **incremental** (not a full data-layer migration) — GraphQL is now
 in place to extend to the future stats pages. Verified live against
 studio.wevr.com (GitLab 18.9.1-ee). This is the direction to build on for stats.
+**Caveat for that stats work:** GitLab's GraphQL does *not* do server-side
+aggregation (no group-by/avg/count) — you still pull records and aggregate
+client-side, same as REST. Its benefit is precise field selection and fewer
+round-trips, not SQL-like querying; don't over-expect it when designing stats.
 
 **KNOWN ISSUE (unresolved):** glute has hit an **intermittent 100%-CPU hang** —
 unresponsive to keys and Ctrl-C, no redraw. Seen once on the `b7eb264` build
