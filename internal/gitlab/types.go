@@ -55,6 +55,7 @@ type Project struct {
 // unknown.
 type Pipeline struct {
 	ID          int64
+	IID         int64 // per-project pipeline number, for GraphQL lookups (project + iid)
 	ProjectID   int64
 	ProjectPath string
 	Ref         string
@@ -80,7 +81,8 @@ type Job struct {
 	PipelineID    int64
 	WebURL        string
 	FailureReason string
-	Runner        string // the runner the job ran on (its description, else name)
+	Runner        string   // the runner the job ran on (its description, else name)
+	Needs         []string // names of the jobs this job depends on (needs:), empty if none/unknown
 	Created       time.Time
 	Started       time.Time
 	Finished      time.Time

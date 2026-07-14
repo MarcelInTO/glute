@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	glab "gitlab.com/gitlab-org/api/client-go"
@@ -21,9 +23,12 @@ import (
 // the window; this is a backstop against a runaway on unexpectedly busy projects.
 const maxJobPages = 50
 
-// Client is glute's handle to a GitLab instance.
+// Client is glute's handle to a GitLab instance. It wraps the REST client-go
+// client and a small GraphQL client (used only where REST can't reach, e.g. job
+// needs: dependencies).
 type Client struct {
 	api *glab.Client
+	gql *gqlClient
 	url string
 }
 
@@ -33,11 +38,13 @@ type Client struct {
 func NewClient(url, token, caCertPath string) (*Client, error) {
 	opts := []glab.ClientOptionFunc{glab.WithBaseURL(url)}
 
+	var httpClient *http.Client
 	if caCertPath != "" {
-		httpClient, err := httpClientWithCA(caCertPath)
+		hc, err := httpClientWithCA(caCertPath)
 		if err != nil {
 			return nil, err
 		}
+		httpClient = hc
 		opts = append(opts, glab.WithHTTPClient(httpClient))
 	}
 
@@ -45,7 +52,8 @@ func NewClient(url, token, caCertPath string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating GitLab client: %w", err)
 	}
-	return &Client{api: api, url: url}, nil
+	// The GraphQL client reuses the same CA-aware HTTP client (nil → default).
+	return &Client{api: api, gql: newGQLClient(url, token, httpClient), url: url}, nil
 }
 
 // WhoAmI returns the username for the authenticated token, or an error if the
@@ -167,32 +175,6 @@ func (c *Client) ListJobs(ctx context.Context, projectID int64, scopes []Status,
 	return out, nil
 }
 
-// ListPipelineJobs returns the jobs of a single pipeline matching the given
-// scopes. glute uses this on the warm path — for the few pipelines that are
-// active or recently changed — so a live refresh needn't re-page a project's
-// whole job history; a job's state changes only as part of its pipeline's.
-func (c *Client) ListPipelineJobs(ctx context.Context, projectID, pipelineID int64, scopes []Status) ([]Job, error) {
-	opt := &glab.ListJobsOptions{Scope: scopeValues(scopes)}
-	opt.PerPage = 100
-	opt.Page = 1
-
-	var out []Job
-	for {
-		jobs, resp, err := c.api.Jobs.ListPipelineJobs(projectID, pipelineID, opt, glab.WithContext(ctx))
-		if err != nil {
-			return nil, fmt.Errorf("listing jobs for pipeline %d of project %d: %w", pipelineID, projectID, err)
-		}
-		for _, j := range jobs {
-			out = append(out, mapJob(j))
-		}
-		if resp.NextPage == 0 {
-			break
-		}
-		opt.Page = resp.NextPage
-	}
-	return out, nil
-}
-
 // scopeValues converts glute Statuses to the upstream scope filter, or nil (all
 // scopes) when none are given.
 func scopeValues(scopes []Status) *[]glab.BuildStateValue {
@@ -206,33 +188,245 @@ func scopeValues(scopes []Status) *[]glab.BuildStateValue {
 	return &vals
 }
 
-// ListDownstreamPipelines returns the child pipelines a pipeline triggers, read
-// from its bridge (trigger) jobs. Dynamically-generated child pipelines don't
-// appear in the project pipeline list, and the parent's own job list holds only
-// the bridge job — so this is the only way to reach a child's jobs. Bridges
-// without a downstream (e.g. not-yet-created) are skipped.
-func (c *Client) ListDownstreamPipelines(ctx context.Context, projectID, pipelineID int64) ([]Pipeline, error) {
-	opt := &glab.ListJobsOptions{}
-	opt.PerPage = 100
-	opt.Page = 1
+// pipelineJobsQuery fetches one pipeline's own fields plus its jobs — each with
+// its needs: dependencies, stage, runner, and (for bridge jobs) the downstream
+// child pipeline it triggers. The jobs connection is paginated via $cursor.
+const pipelineJobsQuery = `query PipelineJobs($path: ID!, $iid: ID!, $cursor: String) {
+  project(fullPath: $path) {
+    pipeline(iid: $iid) {
+      id
+      status
+      ref
+      createdAt
+      startedAt
+      finishedAt
+      duration
+      jobs(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          name
+          kind
+          status
+          createdAt
+          startedAt
+          finishedAt
+          duration
+          queuedDuration
+          stage { name }
+          needs { nodes { name } }
+          runnerManager { runner { description } }
+          downstreamPipeline { iid project { fullPath } }
+        }
+      }
+    }
+  }
+}`
 
-	var out []Pipeline
+type gqlJobNode struct {
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	Kind           string     `json:"kind"`
+	Status         string     `json:"status"`
+	CreatedAt      *time.Time `json:"createdAt"`
+	StartedAt      *time.Time `json:"startedAt"`
+	FinishedAt     *time.Time `json:"finishedAt"`
+	Duration       *float64   `json:"duration"`
+	QueuedDuration *float64   `json:"queuedDuration"`
+	Stage          *struct {
+		Name string `json:"name"`
+	} `json:"stage"`
+	Needs struct {
+		Nodes []struct {
+			Name string `json:"name"`
+		} `json:"nodes"`
+	} `json:"needs"`
+	RunnerManager *struct {
+		Runner *struct {
+			Description string `json:"description"`
+		} `json:"runner"`
+	} `json:"runnerManager"`
+	DownstreamPipeline *struct {
+		IID     string `json:"iid"`
+		Project struct {
+			FullPath string `json:"fullPath"`
+		} `json:"project"`
+	} `json:"downstreamPipeline"`
+}
+
+type gqlPipelineNode struct {
+	ID         string     `json:"id"`
+	Status     string     `json:"status"`
+	Ref        string     `json:"ref"`
+	CreatedAt  *time.Time `json:"createdAt"`
+	StartedAt  *time.Time `json:"startedAt"`
+	FinishedAt *time.Time `json:"finishedAt"`
+	Duration   *float64   `json:"duration"`
+	Jobs       struct {
+		PageInfo struct {
+			HasNextPage bool   `json:"hasNextPage"`
+			EndCursor   string `json:"endCursor"`
+		} `json:"pageInfo"`
+		Nodes []gqlJobNode `json:"nodes"`
+	} `json:"jobs"`
+}
+
+type gqlPipelineResp struct {
+	Project *struct {
+		Pipeline *gqlPipelineNode `json:"pipeline"`
+	} `json:"project"`
+}
+
+// childRef is a downstream child pipeline discovered while fetching a pipeline's
+// jobs — enough to fetch it in turn (its project path and iid).
+type childRef struct {
+	projectPath string
+	iid         int64
+}
+
+// FetchPipelineJobTree fetches, via GraphQL, one pipeline's own fields, its jobs
+// (each with needs:), and the downstream child pipelines it triggers. BUILD jobs
+// become domain Jobs (tagged with projectPath, filtered to scopes); BRIDGE jobs
+// aren't job rows but yield child refs. The returned Pipeline carries the queried
+// pipeline's id/ref/status/timing (ProjectPath set to projectPath) so the caller
+// can record child metadata. A missing pipeline (deleted/inaccessible) returns
+// zero values and no error.
+func (c *Client) FetchPipelineJobTree(ctx context.Context, projectPath string, iid int64, scopes []Status) (Pipeline, []Job, []childRef, error) {
+	scopeSet := statusSet(scopes)
+	var (
+		pipe     Pipeline
+		jobs     []Job
+		children []childRef
+		cursor   string
+		gotPipe  bool
+	)
 	for {
-		bridges, resp, err := c.api.Jobs.ListPipelineBridges(projectID, pipelineID, opt, glab.WithContext(ctx))
-		if err != nil {
-			return nil, fmt.Errorf("listing bridges for pipeline %d of project %d: %w", pipelineID, projectID, err)
+		vars := map[string]any{"path": projectPath, "iid": strconv.FormatInt(iid, 10)}
+		if cursor != "" {
+			vars["cursor"] = cursor
 		}
-		for _, b := range bridges {
-			if b.DownstreamPipeline != nil {
-				out = append(out, mapPipelineInfo(b.DownstreamPipeline))
-			}
+		var resp gqlPipelineResp
+		if err := c.gql.query(ctx, pipelineJobsQuery, vars, &resp); err != nil {
+			return Pipeline{}, nil, nil, fmt.Errorf("graphql jobs for %s!%d: %w", projectPath, iid, err)
 		}
-		if resp.NextPage == 0 {
+		if resp.Project == nil || resp.Project.Pipeline == nil {
+			break // pipeline not found (deleted/inaccessible) — treat as no jobs
+		}
+		pn := resp.Project.Pipeline
+		if !gotPipe {
+			pipe = mapGQLPipeline(pn, projectPath)
+			gotPipe = true
+		}
+		js, kids := collectPipelineNode(pn, projectPath, scopeSet)
+		jobs = append(jobs, js...)
+		children = append(children, kids...)
+		if !pn.Jobs.PageInfo.HasNextPage || pn.Jobs.PageInfo.EndCursor == "" {
 			break
 		}
-		opt.Page = resp.NextPage
+		cursor = pn.Jobs.PageInfo.EndCursor
 	}
-	return out, nil
+	return pipe, jobs, children, nil
+}
+
+// collectPipelineNode maps one fetched pipeline node's jobs into domain Jobs
+// (BUILD jobs only, tagged with projectPath and filtered to scopeSet) and its
+// downstream child pipeline refs (from BRIDGE jobs). Pure, so it's unit-tested
+// against a captured payload without touching the network.
+func collectPipelineNode(pn *gqlPipelineNode, projectPath string, scopeSet map[Status]bool) (jobs []Job, children []childRef) {
+	pipelineID := parseGID(pn.ID)
+	for i := range pn.Jobs.Nodes {
+		n := &pn.Jobs.Nodes[i]
+		if n.DownstreamPipeline != nil {
+			children = append(children, childRef{
+				projectPath: n.DownstreamPipeline.Project.FullPath,
+				iid:         parseIID(n.DownstreamPipeline.IID),
+			})
+		}
+		if strings.EqualFold(n.Kind, "BRIDGE") {
+			continue // bridges aren't job rows; they yielded the child ref above
+		}
+		job := mapGQLJob(n, projectPath, pipelineID)
+		if scopeSet != nil && !scopeSet[job.Status] {
+			continue
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, children
+}
+
+func mapGQLPipeline(pn *gqlPipelineNode, projectPath string) Pipeline {
+	return Pipeline{
+		ID:          parseGID(pn.ID),
+		ProjectPath: projectPath,
+		Ref:         pn.Ref,
+		Status:      Status(strings.ToLower(pn.Status)),
+		Created:     derefTime(pn.CreatedAt),
+		Started:     derefTime(pn.StartedAt),
+		Finished:    derefTime(pn.FinishedAt),
+		Duration:    secondsPtr(pn.Duration),
+	}
+}
+
+func mapGQLJob(n *gqlJobNode, projectPath string, pipelineID int64) Job {
+	j := Job{
+		ID:          parseGID(n.ID),
+		Name:        n.Name,
+		Status:      Status(strings.ToLower(n.Status)),
+		ProjectPath: projectPath,
+		PipelineID:  pipelineID,
+		Created:     derefTime(n.CreatedAt),
+		Started:     derefTime(n.StartedAt),
+		Finished:    derefTime(n.FinishedAt),
+		Duration:    secondsPtr(n.Duration),
+		Queued:      secondsPtr(n.QueuedDuration),
+	}
+	if n.Stage != nil {
+		j.Stage = n.Stage.Name
+	}
+	if n.RunnerManager != nil && n.RunnerManager.Runner != nil {
+		j.Runner = n.RunnerManager.Runner.Description
+	}
+	for _, need := range n.Needs.Nodes {
+		j.Needs = append(j.Needs, need.Name)
+	}
+	return j
+}
+
+// parseGID extracts the trailing numeric id from a GitLab global id such as
+// "gid://gitlab/Ci::Build/727460" (works for Ci::Bridge and Ci::Pipeline too).
+// Returns 0 if there's no numeric suffix.
+func parseGID(gid string) int64 {
+	i := strings.LastIndex(gid, "/")
+	if i < 0 {
+		return 0
+	}
+	return parseIID(gid[i+1:])
+}
+
+func parseIID(s string) int64 {
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func secondsPtr(s *float64) time.Duration {
+	if s == nil {
+		return 0
+	}
+	return secondsToDuration(*s)
+}
+
+func statusSet(scopes []Status) map[Status]bool {
+	if len(scopes) == 0 {
+		return nil
+	}
+	m := make(map[Status]bool, len(scopes))
+	for _, s := range scopes {
+		m[s] = true
+	}
+	return m
 }
 
 func mapProject(p *glab.Project) Project {
@@ -248,6 +442,7 @@ func mapProject(p *glab.Project) Project {
 func mapPipelineInfo(pi *glab.PipelineInfo) Pipeline {
 	return Pipeline{
 		ID:        pi.ID,
+		IID:       pi.IID,
 		ProjectID: pi.ProjectID,
 		Ref:       pi.Ref,
 		SHA:       pi.SHA,
@@ -262,6 +457,7 @@ func mapPipelineInfo(pi *glab.PipelineInfo) Pipeline {
 func mapPipelineDetail(projectID int64, p *glab.Pipeline) Pipeline {
 	return Pipeline{
 		ID:        p.ID,
+		IID:       p.IID,
 		ProjectID: projectID,
 		Ref:       p.Ref,
 		SHA:       p.SHA,

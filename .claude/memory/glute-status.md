@@ -47,6 +47,22 @@ between refreshes (`currentView.tick`, `89ffbb1`). Added a **goroutine-dump
 diagnostic**: `kill -USR1 <pid>` writes all stacks to `glute.log`
 (`watchDumpSignal`, `0ebc611`).
 
+As of 2026-07-14 (implemented + verified; commit pending user OK): the Current
+tab now orders each pipeline's jobs by **execution order honoring `needs:`
+dependencies**, not stages — many wevr pipelines (esp. dynamically-generated
+child pipelines) drive execution with `needs` and put every job in one stage, so
+stage/alphabetical ordering was wrong (e.g. an `Intro` job with no needs sorted
+last). `needs` isn't in the REST API, so glute now has a **tiny hand-rolled
+GraphQL client** (`internal/gitlab/graphql.go`) used on the **warm path only**:
+`Client.FetchPipelineJobTree` fetches a pipeline's fields + jobs (with `needs`) +
+downstream children in one query, replacing the old per-pipeline
+`ListPipelineJobs` + bridge calls. `sortPipelineJobs` does a stable topological
+sort by dependency *depth* (then stage/name), matching the GitLab UI's DAG view;
+falls back to stage order when no `needs`. Bulk/history stays REST. Scope was
+deliberately **incremental** (not a full data-layer migration) — GraphQL is now
+in place to extend to the future stats pages. Verified live against
+studio.wevr.com (GitLab 18.9.1-ee). This is the direction to build on for stats.
+
 **KNOWN ISSUE (unresolved):** glute has hit an **intermittent 100%-CPU hang** —
 unresponsive to keys and Ctrl-C, no redraw. Seen once on the `b7eb264` build
 (pre-timer-work, so not caused by it), after ~1h idle with 0 running pipelines;

@@ -12,8 +12,9 @@ and job stats across a configured watchlist of "products". Go, cross-platform.
 
 Stack: Go 1.26, cobra (CLI), rivo/tview + gdamore/tcell (TUI),
 pelletier/go-toml/v2 (config), `gitlab.com/gitlab-org/api/client-go` (the
-official successor to xanzy/go-gitlab). Keep it CGO-free so cross-compilation
-stays trivial.
+official successor to xanzy/go-gitlab) for REST, plus a tiny hand-rolled GraphQL
+client (`internal/gitlab/graphql.go`) for what REST can't return (job `needs:`).
+Keep it CGO-free so cross-compilation stays trivial.
 
 ## Key decisions (why)
 
@@ -59,24 +60,38 @@ stays trivial.
 - The pipeline list supports `updated_after` and orders by `updated_at desc`, so
   the incremental delta = "pipelines whose status changed since last refresh."
 - **Jobs use two paths.** The full-window backfill (cold start + periodic
-  resync) uses the project-wide jobs list (`ListJobs`): it's cheap (~1 page per
-  project) and — crucially — *includes child-pipeline jobs*. The warm delta
-  fetches jobs per pipeline (`ListPipelineJobs`) for only the active/changed
-  pipelines, since a job's state changes only as part of its pipeline's — that's
-  what keeps warm refreshes off the multi-second project-wide sweep. Both paths
-  share `jobFetchScopes` so the panels are consistent. The jobs endpoint carries
-  `duration` directly (no per-job enrichment).
+  resync) uses the REST project-wide jobs list (`ListJobs`): it's cheap (~1 page
+  per project) and — crucially — *includes child-pipeline jobs*. The warm delta
+  fetches jobs per pipeline via **GraphQL** (`FetchPipelineJobTree`) for only the
+  active/changed pipelines, since a job's state changes only as part of its
+  pipeline's — that's what keeps warm refreshes off the multi-second project-wide
+  sweep. Both paths share `jobFetchScopes` so the panels are consistent. Jobs
+  carry `duration` directly (no per-job enrichment).
+- **Why GraphQL on the warm path.** The REST job payload has no `needs:`
+  dependencies, and dependencies (not stages) determine execution order in DAG
+  pipelines. GraphQL's `CiJob.needs` is the only source, so the Current tree can
+  order jobs correctly (see the topological sort in the TUI notes). One GraphQL
+  query per pipeline also returns the pipeline's fields, its jobs *with needs*,
+  and its downstream children in a single round-trip — collapsing the old warm
+  path (per-pipeline jobs + separate bridge calls). GraphQL is a tiny hand-rolled
+  client (`graphql.go`, no new module; reuses the token + CA-aware HTTP client);
+  bulk/history stays on REST. GraphQL ids are global (`gid://gitlab/Ci::Build/N`)
+  — `parseGID` extracts the int; pipelines are looked up by `(project, iid)`, so
+  `Pipeline.IID` is populated. GraphQL status enums are UPPERCASE — lowercased to
+  match our `Status` constants.
 - **Child pipelines** (dynamically-generated, `source=parent_pipeline`) do NOT
   appear in the project pipeline list, and a parent's own jobs are just the
-  bridge/trigger job. So on the warm path we follow each pipeline's *bridges*
-  (`ListDownstreamPipelines`) into its child pipelines and fetch their jobs too,
-  recursively. Children stay out of the pipeline aggregate store (counting them
-  would double the parent's ref in Top Pipelines); only their jobs surface. A
-  root is marked job-complete only once its whole subtree is terminal, so a
-  child that outlives its parent (fire-and-forget trigger) keeps being polled.
-  On the bulk path children come for free (project-wide `/jobs` already lists
-  them). This was a real regression when jobs first moved to per-pipeline —
-  keep it covered.
+  bridge/trigger job. On the warm path the GraphQL query returns each **BRIDGE**
+  job's `downstreamPipeline { iid project { fullPath } }`; we recurse into those
+  children (by `(path, iid)`) and fetch their jobs too. Bridge jobs are not job
+  rows (only their child ref is used); children stay out of the pipeline
+  aggregate store (counting them would double the parent's ref in Top Pipelines)
+  — only their jobs surface, tagged with the child's own real project path. A
+  root is marked job-complete only once its whole subtree is terminal, so a child
+  that outlives its parent (fire-and-forget trigger) keeps being polled. On the
+  bulk path children come for free (project-wide `/jobs` already lists them).
+  This was a real regression when jobs first moved to per-pipeline — keep it
+  covered.
 
 ## TUI notes
 
@@ -90,6 +105,17 @@ stays trivial.
   refresh and self-heal one refresh after a cold start / resync, where the bulk
   job path learns no edges). Pipelines/Jobs remain the optimization-oriented
   stats tabs (their Running panels are slated to be replaced by more stats).
+- **Job order within a pipeline** follows execution order, matching the GitLab UI:
+  `sortPipelineJobs` orders by job **dependency** (`needs:`), not stage, because
+  many pipelines drive execution with `needs` and dependencies override stages.
+  It's a stable topological sort — jobs ordered by dependency *depth* (longest
+  needs-chain), then stage-then-name within a layer — so it groups dependency
+  layers like the UI's DAG view and never reshuffles as jobs start (it depends
+  only on structure, not status/time). With no `needs` it falls back to stage
+  execution order: stages ranked by their lowest job ID (GitLab creates jobs
+  stage by stage), then name. `needs` is only available via GraphQL (warm path);
+  bulk-fetched jobs have none, so a just-resynced active pipeline uses the stage
+  fallback for one refresh until the warm delta repopulates `needs`.
 - The Current tree's job rows show a **RUNNER** column (the job's runner
   description, from `Job.Runner`). Runner descriptions are long, so
   `config.toml`'s optional `[runner_aliases]` table remaps a runner's full name

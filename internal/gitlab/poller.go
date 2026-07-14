@@ -152,13 +152,6 @@ func (p *Poller) Refresh(ctx context.Context) (Snapshot, error) {
 		return Snapshot{UpdatedAt: now, Errors: errs}, nil
 	}
 
-	// A projectID→path map lets the tree walk tag child pipelines (which may
-	// live in a different project than their root) with a real path.
-	projByID := make(map[int64]string, len(projects))
-	for _, pr := range projects {
-		projByID[pr.ID] = pr.Path
-	}
-
 	// 2. Incremental delta vs. a full-window reconcile. The store is empty on
 	//    the first refresh (cold) — that path naturally backfills everything.
 	cold := p.pipeWatermark.IsZero()
@@ -212,7 +205,7 @@ func (p *Poller) Refresh(ctx context.Context) (Snapshot, error) {
 		rootPipes := p.jobRoots(changed)
 		jobRoots = len(rootPipes)
 		var settled, stillPending []int64
-		jobs, settled, stillPending, jobErrs = p.fetchJobsTree(ctx, rootPipes, projByID)
+		jobs, settled, stillPending, jobErrs = p.fetchJobsTree(ctx, rootPipes)
 		for _, id := range settled {
 			p.jobsDone[id] = true // subtree terminal: its jobs won't change again
 			delete(p.pending, id)
@@ -512,18 +505,20 @@ func (p *Poller) fetchPipelines(ctx context.Context, projects []Project, since t
 	return all, errs
 }
 
-// treeNode is one pipeline visited while walking a root's parent→child tree.
+// treeNode is one pipeline to fetch while walking a root's parent→child tree,
+// identified by (project path, iid) for the GraphQL lookup.
 type treeNode struct {
 	rootID      int64  // the top-level pipeline this subtree belongs to
-	projectID   int64  // project of this pipeline (a child may differ from its root)
-	pipelineID  int64  // this pipeline
-	projectPath string // inherited from the root, for tagging jobs
+	parentID    int64  // immediate parent pipeline id; 0 for a root
+	projectPath string // this pipeline's project (a child may differ from its root)
+	iid         int64  // this pipeline's per-project number
 }
 
-// fetchJobsTree fetches jobs for each root pipeline and, following each
-// pipeline's bridges, for its downstream child pipelines (recursively). Child
-// pipelines don't appear in the project pipeline list, so their jobs are only
-// reachable this way; jobs inherit their root's project path.
+// fetchJobsTree fetches, via GraphQL, jobs for each root pipeline and — following
+// each pipeline's downstream (bridge) children recursively — for its child
+// pipelines too. Child pipelines don't appear in the project pipeline list, so
+// their jobs are only reachable this way; each GraphQL call returns a pipeline's
+// jobs (with needs:) plus its child refs in one round-trip.
 //
 // It returns all jobs plus, for the finished roots, which are settled (whole
 // subtree terminal → mark done and stop) versus still pending (a descendant is
@@ -531,34 +526,40 @@ type treeNode struct {
 // omitted from both: they're re-polled via the store while they run.
 //
 // As a side effect it records the parent→child pipeline edges it discovers into
-// p.childPipes/p.childParent (tagging children with a real project path via
-// projByID, falling back to the root's), so the Current tab can reconstruct the
-// active tree. Edges are recorded for every discovered child, even one whose jobs
-// are already settled, so a finished child under a still-running root is retained.
-func (p *Poller) fetchJobsTree(ctx context.Context, roots []Pipeline, projByID map[int64]string) (jobs []Job, settled, pending []int64, errs []error) {
-	visited := map[int64]bool{}
+// p.childPipes/p.childParent (with each child's real project path and status from
+// its own fetch), so the Current tab can reconstruct the active tree. Edges are
+// recorded for every discovered child, even a finished one, so a finished child
+// under a still-running root is retained.
+func (p *Poller) fetchJobsTree(ctx context.Context, roots []Pipeline) (jobs []Job, settled, pending []int64, errs []error) {
+	type nodeKey struct {
+		path string
+		iid  int64
+	}
+	visited := map[nodeKey]bool{}
 	rootFinished := map[int64]bool{}
 	subtreeActive := map[int64]bool{} // rootID → a node in its subtree is active (or unfetched)
 
 	var frontier []treeNode
 	for _, pi := range roots {
-		if visited[pi.ID] {
+		k := nodeKey{pi.ProjectPath, pi.IID}
+		if visited[k] {
 			continue
 		}
-		visited[pi.ID] = true
+		visited[k] = true
 		rootFinished[pi.ID] = pi.Status.IsFinished()
 		if !pi.Status.IsFinished() {
 			subtreeActive[pi.ID] = true
 		}
-		frontier = append(frontier, treeNode{pi.ID, pi.ProjectID, pi.ID, pi.ProjectPath})
+		frontier = append(frontier, treeNode{rootID: pi.ID, projectPath: pi.ProjectPath, iid: pi.IID})
 	}
 
 	for len(frontier) > 0 {
 		type result struct {
 			node     treeNode
+			pipe     Pipeline
 			jobs     []Job
-			children []Pipeline
-			jobOK    bool
+			children []childRef
+			ok       bool
 			errs     []error
 		}
 		results := make([]result, len(frontier))
@@ -573,21 +574,14 @@ func (p *Poller) fetchJobsTree(ctx context.Context, roots []Pipeline, projByID m
 				defer func() { <-sem }()
 				n := frontier[i]
 				r := result{node: n}
-				js, err := p.client.ListPipelineJobs(ctx, n.projectID, n.pipelineID, jobFetchScopes)
+				pipe, js, kids, err := p.client.FetchPipelineJobTree(ctx, n.projectPath, n.iid, jobFetchScopes)
 				if err != nil {
 					r.errs = append(r.errs, err)
 				} else {
-					r.jobOK = true
-					for k := range js {
-						js[k].ProjectPath = n.projectPath
-					}
+					r.ok = true
+					r.pipe = pipe
 					r.jobs = js
-				}
-				children, err := p.client.ListDownstreamPipelines(ctx, n.projectID, n.pipelineID)
-				if err != nil {
-					r.errs = append(r.errs, err)
-				} else {
-					r.children = children
+					r.children = kids
 				}
 				results[i] = r
 			}(i)
@@ -599,29 +593,38 @@ func (p *Poller) fetchJobsTree(ctx context.Context, roots []Pipeline, projByID m
 			jobs = append(jobs, r.jobs...)
 			errs = append(errs, r.errs...)
 			// A node we couldn't read leaves its subtree unsettled, so we retry.
-			if !r.jobOK {
+			if !r.ok {
+				subtreeActive[r.node.rootID] = true
+				continue
+			}
+			// This node's pipeline id: the root's own id, or the id from the
+			// fetched pipe for a discovered child.
+			nodeID := r.node.rootID
+			if r.node.parentID != 0 {
+				nodeID = r.pipe.ID
+				// Record the child edge + metadata regardless of whether it's
+				// finished, so the Current tree keeps a finished child.
+				p.childPipes[nodeID] = r.pipe
+				p.childParent[nodeID] = r.node.parentID
+			}
+			if !r.pipe.Status.IsFinished() {
 				subtreeActive[r.node.rootID] = true
 			}
-			for _, c := range r.children {
-				// Record the edge and child metadata regardless of whether we
-				// traverse into it, so the Current tree keeps a finished child.
-				cp := c
-				if path, ok := projByID[c.ProjectID]; ok {
-					cp.ProjectPath = path
-				} else {
-					cp.ProjectPath = r.node.projectPath
-				}
-				p.childPipes[c.ID] = cp
-				p.childParent[c.ID] = r.node.pipelineID
-
-				if visited[c.ID] || p.jobsDone[c.ID] {
+			for _, cr := range r.children {
+				if cr.iid == 0 {
 					continue
 				}
-				visited[c.ID] = true
-				if !c.Status.IsFinished() {
-					subtreeActive[r.node.rootID] = true
+				k := nodeKey{cr.projectPath, cr.iid}
+				if visited[k] {
+					continue
 				}
-				next = append(next, treeNode{r.node.rootID, c.ProjectID, c.ID, r.node.projectPath})
+				visited[k] = true
+				next = append(next, treeNode{
+					rootID:      r.node.rootID,
+					parentID:    nodeID,
+					projectPath: cr.projectPath,
+					iid:         cr.iid,
+				})
 			}
 		}
 		frontier = next

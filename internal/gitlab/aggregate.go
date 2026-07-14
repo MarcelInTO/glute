@@ -156,30 +156,111 @@ func activePipelines(roots []Pipeline, jobs []Job, childPipes map[int64]Pipeline
 	return out
 }
 
-// sortPipelineJobs orders a pipeline's jobs the way the GitLab UI shows them —
-// by stage in execution order, then by name within a stage. The jobs API
-// carries no stage index, but GitLab creates a pipeline's jobs stage by stage,
-// so the lowest job ID in a stage tracks that stage's position in the pipeline
-// (earlier stages were created first, so they hold lower IDs). Ranking stages by
-// that minimum keeps them in execution order instead of alphabetical; within a
-// stage jobs run in parallel, so they're ordered by name (ID breaks ties).
+// sortPipelineJobs orders a pipeline's jobs the way they execute, matching the
+// GitLab UI. When any job declares dependencies (needs:), it's a stable
+// topological sort of the needs DAG — every job follows the jobs it needs, since
+// dependencies drive execution order and override stages. With no needs anywhere
+// it falls back to stage execution order.
+//
+// The order depends only on pipeline structure (names, needs, stage, id), never
+// on job status or start time, so it does not reshuffle as jobs start.
+//
+// Stage fallback: the jobs API carries no stage index, but GitLab creates a
+// pipeline's jobs stage by stage, so the lowest job ID in a stage tracks that
+// stage's position; rank stages by that minimum, then order by name within a
+// stage. This same key breaks ties between independent jobs in the topo sort.
 func sortPipelineJobs(jobs []Job) []Job {
 	out := append([]Job(nil), jobs...)
+
 	stageRank := map[string]int64{}
 	for _, j := range out {
 		if r, ok := stageRank[j.Stage]; !ok || j.ID < r {
 			stageRank[j.Stage] = j.ID
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if ri, rj := stageRank[out[i].Stage], stageRank[out[j].Stage]; ri != rj {
-			return ri < rj
+	// less is the structural order used both as the no-needs fallback and as the
+	// tie-break among jobs that are ready together in the topo sort.
+	less := func(a, b Job) bool {
+		if ra, rb := stageRank[a.Stage], stageRank[b.Stage]; ra != rb {
+			return ra < rb
 		}
-		if out[i].Name != out[j].Name {
-			return out[i].Name < out[j].Name
+		if a.Name != b.Name {
+			return a.Name < b.Name
 		}
-		return out[i].ID < out[j].ID
+		return a.ID < b.ID
+	}
+
+	for _, j := range out {
+		if len(j.Needs) > 0 {
+			return topoSortJobs(out, less)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return less(out[i], out[j]) })
+	return out
+}
+
+// topoSortJobs orders jobs by dependency depth, then by less. A job's depth is
+// the longest needs-chain ending at it (0 for a job with no needs within the
+// set); since a job's depth always exceeds each of its needs' depths, ordering
+// by depth is a valid topological order — every job follows the jobs it needs —
+// and it also groups each dependency layer together, matching the GitLab UI's
+// layered DAG view. Within a layer (mutually independent jobs) less decides.
+//
+// A need naming a job outside this set is ignored (optional or cross-pipeline).
+// A malformed cycle can't stall it: the depth walk treats a back-edge to an
+// in-progress job as absent, so depths stay finite and every job is placed.
+func topoSortJobs(jobs []Job, less func(a, b Job) bool) []Job {
+	byName := make(map[string]int, len(jobs))
+	for i, j := range jobs {
+		byName[j.Name] = i
+	}
+
+	const (
+		unvisited = iota
+		inProgress
+		done
+	)
+	depth := make([]int, len(jobs))
+	state := make([]int8, len(jobs))
+	var compute func(i int) int
+	compute = func(i int) int {
+		if state[i] == done {
+			return depth[i]
+		}
+		state[i] = inProgress // a need pointing back to an in-progress job is a cycle edge, skipped
+		d := 0
+		for _, need := range jobs[i].Needs {
+			n, ok := byName[need]
+			if !ok || n == i || state[n] == inProgress {
+				continue
+			}
+			if nd := compute(n) + 1; nd > d {
+				d = nd
+			}
+		}
+		depth[i] = d
+		state[i] = done
+		return d
+	}
+	for i := range jobs {
+		compute(i)
+	}
+
+	idx := make([]int, len(jobs))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		ia, ib := idx[a], idx[b]
+		if depth[ia] != depth[ib] {
+			return depth[ia] < depth[ib]
+		}
+		return less(jobs[ia], jobs[ib])
 	})
+	out := make([]Job, len(jobs))
+	for k, i := range idx {
+		out[k] = jobs[i]
+	}
 	return out
 }
 

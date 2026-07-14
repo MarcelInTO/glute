@@ -1,9 +1,77 @@
 package gitlab
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
+
+func jobNames(jobs []Job) string {
+	n := make([]string, len(jobs))
+	for i, j := range jobs {
+		n[i] = j.Name
+	}
+	return strings.Join(n, ",")
+}
+
+func TestSortPipelineJobsByNeeds(t *testing.T) {
+	// The needs order (build → test → deploy) contradicts BOTH the alphabetical
+	// stage order (build, deploy, test) AND the min-ID stage rank (deploy=10,
+	// test=20, build=30 → deploy, test, build). Only honoring needs yields the
+	// right order, proving dependencies win over stages.
+	jobs := []Job{
+		{ID: 10, Name: "deploy", Stage: "deploy", Needs: []string{"test"}},
+		{ID: 20, Name: "test", Stage: "test", Needs: []string{"build"}},
+		{ID: 30, Name: "build", Stage: "build"},
+	}
+	if got := jobNames(sortPipelineJobs(jobs)); got != "build,test,deploy" {
+		t.Errorf("sortPipelineJobs = %q, want build,test,deploy", got)
+	}
+}
+
+func TestSortPipelineJobsNeedsTieBreakByName(t *testing.T) {
+	// lint and test both need setup, so they're ready together; the tie-break is
+	// stage-then-name, so lint precedes test despite its higher ID.
+	jobs := []Job{
+		{ID: 21, Name: "test", Stage: "check", Needs: []string{"setup"}},
+		{ID: 20, Name: "lint", Stage: "check", Needs: []string{"setup"}},
+		{ID: 10, Name: "setup", Stage: "setup"},
+	}
+	if got := jobNames(sortPipelineJobs(jobs)); got != "setup,lint,test" {
+		t.Errorf("sortPipelineJobs = %q, want setup,lint,test", got)
+	}
+}
+
+func TestSortPipelineJobsIgnoresUnknownNeeds(t *testing.T) {
+	// A need naming a job outside the set (optional/cross-pipeline) is ignored,
+	// but the presence of needs still switches on the topo path.
+	jobs := []Job{
+		{ID: 2, Name: "b", Stage: "s", Needs: []string{"a", "ghost"}},
+		{ID: 1, Name: "a", Stage: "s"},
+	}
+	if got := jobNames(sortPipelineJobs(jobs)); got != "a,b" {
+		t.Errorf("sortPipelineJobs = %q, want a,b", got)
+	}
+}
+
+func TestSortPipelineJobsCycleTerminates(t *testing.T) {
+	// A malformed a↔b cycle must not hang; independent c leads, then the cycle is
+	// broken deterministically by the tie-break key.
+	jobs := []Job{
+		{ID: 1, Name: "a", Stage: "s", Needs: []string{"b"}},
+		{ID: 2, Name: "b", Stage: "s", Needs: []string{"a"}},
+		{ID: 3, Name: "c", Stage: "s"},
+	}
+	got := sortPipelineJobs(jobs)
+	if len(got) != 3 {
+		t.Fatalf("want all 3 jobs, got %d: %s", len(got), jobNames(got))
+	}
+	// b and c end up at depth 0 (the a→b back-edge is broken), a at depth 1;
+	// the exact order of a malformed cycle is best-effort but deterministic.
+	if jobNames(got) != "b,c,a" {
+		t.Errorf("sortPipelineJobs = %q, want b,c,a", jobNames(got))
+	}
+}
 
 func TestTopPipelinesGroupsAndAverages(t *testing.T) {
 	end := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
