@@ -1,10 +1,30 @@
 package ui
 
 import (
+	"strings"
+
 	"github.com/MarcelInTO/glute/internal/gitlab"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
+
+// displayRef shortens a GitLab merge-request pipeline ref
+// ("refs/merge-requests/<iid>/head") to "MR <iid>", since the raw ref is long
+// and uninformative. Any other ref (a branch or tag) is returned unchanged.
+func displayRef(ref string) string {
+	const prefix = "refs/merge-requests/"
+	if !strings.HasPrefix(ref, prefix) {
+		return ref
+	}
+	iid := ref[len(prefix):]
+	if i := strings.IndexByte(iid, '/'); i >= 0 {
+		iid = iid[:i] // drop the trailing "/head" or "/merge"
+	}
+	if iid == "" || strings.IndexFunc(iid, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+		return ref // not the numeric shape we expected; leave it as-is
+	}
+	return "MR " + iid
+}
 
 // statusColor maps a CI status to a cell color.
 func statusColor(s gitlab.Status) tcell.Color {

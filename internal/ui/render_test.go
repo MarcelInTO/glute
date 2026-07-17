@@ -68,6 +68,40 @@ func TestDashboardRendersCurrentTab(t *testing.T) {
 	}
 }
 
+// TestCurrentTabShowsRecentlyFinished checks the bottom panel lists the recently
+// finished pipelines (newest first) so an outcome stays visible after the
+// pipeline leaves the active tree above.
+func TestCurrentTabShowsRecentlyFinished(t *testing.T) {
+	d := newSampleDashboard() // Current is the default (first) tab
+	out := renderToText(t, d, 130, 32)
+	t.Logf("Current tab:\n%s", out)
+
+	// The panel title plus a ref that only the finished panel carries on this tab
+	// (the failed gateway run), so we know it's the finished panel we're seeing.
+	for _, want := range []string{"Recently finished", "feat/rate-limit", "failed", "DURATION", "WHEN"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("current render missing recently-finished content %q", want)
+		}
+	}
+}
+
+// TestCurrentFinishedPanelHoverRevealsFullPath checks the non-scrolling finished
+// panel supports the mouse-hover path reveal the tree above can't (the tree
+// scrolls, so it reveals via selection instead).
+func TestCurrentFinishedPanelHoverRevealsFullPath(t *testing.T) {
+	d := newSampleDashboard()
+	_ = renderToText(t, d, 130, 32) // draw once so GetInnerRect is populated
+
+	ix, iy, _, _ := d.current.finished.table.GetInnerRect()
+	// Row 0 is the header; the first data row (newest finished) is acme/payments/api.
+	if path, ok := d.current.finished.hoverAt(ix+1, iy+1); !ok || path != "acme/payments/api" {
+		t.Fatalf("hover over first finished row = (%q, %v), want acme/payments/api", path, ok)
+	}
+	if _, ok := d.current.finished.hoverAt(ix+1, iy); ok {
+		t.Errorf("hover over the header row should reveal nothing")
+	}
+}
+
 func TestCurrentTabAppliesRunnerAliases(t *testing.T) {
 	snap := gitlab.SampleSnapshot()
 	d := NewDashboard(gitlab.FakeService{Snap: snap}, Options{

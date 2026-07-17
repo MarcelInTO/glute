@@ -52,11 +52,11 @@ func SampleSnapshot() Snapshot {
 
 	recent := []Pipeline{
 		{ID: 98, ProjectPath: "acme/payments/api", Ref: "main", Status: StatusSuccess,
-			Source: "push", Finished: now.Add(-12 * time.Minute), Duration: 5*time.Minute + 40*time.Second},
+			Source: "push", User: "jchen", Finished: now.Add(-12 * time.Minute), Duration: 5*time.Minute + 40*time.Second},
 		{ID: 97, ProjectPath: "acme/platform/gateway", Ref: "feat/rate-limit", Status: StatusFailed,
-			Source: "merge_request_event", Finished: now.Add(-38 * time.Minute), Duration: 3*time.Minute + 12*time.Second},
+			Source: "merge_request_event", User: "priya", Finished: now.Add(-38 * time.Minute), Duration: 3*time.Minute + 12*time.Second},
 		{ID: 96, ProjectPath: "acme/payments/web", Ref: "main", Status: StatusSuccess,
-			Source: "push", Finished: now.Add(-2 * time.Hour), Duration: 7 * time.Minute},
+			Source: "push", User: "amir", Finished: now.Add(-2 * time.Hour), Duration: 7 * time.Minute},
 	}
 
 	topPipe := []PipelineAgg{

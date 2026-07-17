@@ -273,15 +273,23 @@ func (d *Dashboard) onMouse(event *tcell.EventMouse, action tview.MouseAction) (
 	if name, _ := d.outer.GetFrontPage(); name == pageHelp {
 		return event, action // don't chase the mouse under the help overlay
 	}
-	// The Current tab scrolls, so its footer detail is driven by row selection
-	// (see SetSelectionChangedFunc), not by mouse position; let tview handle the
-	// click for selection and leave the footer alone.
+	x, y := event.Position()
+
+	// The Current tab's tree table scrolls, so its footer detail is driven by row
+	// selection (see SetSelectionChangedFunc), not by mouse position. The
+	// non-scrolling "recently finished" panel below it has stable row math,
+	// though, so it gets the usual hover reveal — but only while the cursor is
+	// actually over one of its rows, so passing over the tree above leaves the
+	// selection-derived path untouched.
 	if d.tabs[d.active] == pageCurrent {
+		if path, ok := d.current.finished.hoverAt(x, y); ok && path != d.hoverPath {
+			d.hoverPath = path
+			d.updateFooter()
+		}
 		return event, action
 	}
 
 	hover := ""
-	x, y := event.Position()
 	if path, ok := d.hoverPathAt(x, y); ok {
 		hover = path
 	}

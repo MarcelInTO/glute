@@ -11,18 +11,27 @@ import (
 	"github.com/rivo/tview"
 )
 
-// currentView is the Current tab: a single, full-height table that renders the
-// active-pipeline tree — each root pipeline, its jobs, and its downstream child
-// pipelines — indented to show the hierarchy. It's the "what's happening right
-// now" monitoring view. Unlike the other tabs' panels the table is selectable so
-// it scrolls with the arrow keys; the selected row's full project path is
-// surfaced in the footer (in place of the mouse-hover other tabs use).
+// currentView is the Current tab: the "what's happening right now" monitoring
+// view, split top-to-bottom into the active-pipeline tree (roughly the top two
+// thirds) and a "recently finished" panel below it (roughly the bottom third).
+//
+// The tree table renders each root pipeline, its jobs, and its downstream child
+// pipelines, indented to show the hierarchy. Unlike the other tabs' panels it's
+// selectable so it scrolls with the arrow keys; the selected row's full project
+// path is surfaced in the footer (in place of the mouse-hover other tabs use).
+//
+// The finished panel keeps a just-completed pipeline visible with its outcome
+// after it drops out of the tree above — otherwise a pipeline you were watching
+// simply vanishes the moment it finishes and you have to leave the tab to learn
+// whether it passed. It's a plain non-scrolling panel (newest first), so the
+// most recent completions sit at the top and older ones clip off the bottom.
 type currentView struct {
-	root    *tview.Flex
-	table   *tview.Table
-	paths   []string          // full project path per data row, indexed by (tableRow - 1)
-	rows    []curRow          // last-rendered rows, so tick can re-time the live ones
-	aliases map[string]string // runner full name → short display label
+	root     *tview.Flex
+	table    *tview.Table
+	finished *panelTable
+	paths    []string          // full project path per data row, indexed by (tableRow - 1)
+	rows     []curRow          // last-rendered rows, so tick can re-time the live ones
+	aliases  map[string]string // runner full name → short display label
 }
 
 func newCurrentView(aliases map[string]string) *currentView {
@@ -32,9 +41,14 @@ func newCurrentView(aliases map[string]string) *currentView {
 	t.SetSelectable(true, false)
 	t.SetSelectedStyle(tcell.StyleDefault.Background(tcell.ColorDarkSlateGray).Foreground(tcell.ColorWhite))
 
+	finished := newPanelTable("Recently finished pipelines · newest first")
+
+	// 2:1 split puts the finished panel at about the bottom third; the tree keeps
+	// focus so the arrow keys still scroll it.
 	root := tview.NewFlex().SetDirection(tview.FlexRow)
-	root.AddItem(t, 0, 1, true)
-	return &currentView{root: root, table: t, aliases: aliases}
+	root.AddItem(t, 0, 2, true)
+	root.AddItem(finished.table, 0, 1, false)
+	return &currentView{root: root, table: t, finished: finished, aliases: aliases}
 }
 
 // displayRunner maps a runner's full name to its configured short label, or
@@ -76,6 +90,8 @@ func (r curRow) when() string {
 }
 
 func (v *currentView) update(s gitlab.Snapshot) {
+	fillFinishedPipelines(v.finished, s.RecentPipelines)
+
 	t := v.table
 	t.Clear()
 	setCurrentHeader(t)
@@ -162,7 +178,7 @@ func flattenActive(aps []gitlab.ActivePipeline) []curRow {
 		if total > 0 {
 			progress = fmt.Sprintf("%d/%d", done, total)
 		}
-		label := format.Base(ap.ProjectPath) + " · " + ap.Ref
+		label := format.Base(ap.ProjectPath) + " · " + displayRef(ap.Ref)
 		if isChild {
 			label = "↳ " + label
 		}
@@ -199,6 +215,48 @@ func flattenActive(aps []gitlab.ActivePipeline) []curRow {
 		walk(ap, 0, false)
 	}
 	return rows
+}
+
+// fillFinishedPipelines renders the Current tab's bottom panel: the most
+// recently finished pipelines, newest first. s.RecentPipelines is already
+// finished-only and sorted newest-finished-first, so the rows the user most
+// likely just watched sit at the top; older ones beyond the pane's height clip
+// off the bottom. USER mirrors the tree above (who triggered it);
+// STATUS/DURATION/WHEN answer "did it pass, and when". This is deliberately
+// close to the Pipelines tab's recent panel but adds USER, so it's kept separate
+// rather than shared.
+func fillFinishedPipelines(p *panelTable, pipes []gitlab.Pipeline) {
+	const colDuration, colWhen = 4, 5
+	p.reset("PROJECT", "REF", "STATUS", "USER", "DURATION", "WHEN")
+	// A header reads best justified the same way as its column's data, so right-
+	// align the two numeric headers to match their right-aligned cells (the tree
+	// above does the same for TIME/DONE via setCurrentHeader).
+	for _, c := range []int{colDuration, colWhen} {
+		if cell := p.table.GetCell(0, c); cell != nil {
+			cell.SetAlign(tview.AlignRight)
+		}
+	}
+	// Pin the view to the top so the newest rows always show. tview's Table sets
+	// a sticky "trackEnd" the first time its content fits the pane — which it does
+	// on the empty first render, before the initial refresh lands — and then keeps
+	// the view parked at the bottom once the list overflows, hiding exactly the
+	// most-recent rows this panel exists to show. ScrollToBeginning clears it.
+	p.table.ScrollToBeginning()
+	if len(pipes) == 0 {
+		emptyRow(p.table, 6)
+		return
+	}
+	for i, pipe := range pipes {
+		r := i + 1
+		p.addPath(pipe.ProjectPath)
+		p.table.SetCell(r, 0, textCell(format.Trunc(format.Base(pipe.ProjectPath), 18)))
+		p.table.SetCell(r, 1, textCell(format.Trunc(displayRef(pipe.Ref), 15)))
+		p.table.SetCell(r, 2, statusCell(pipe.Status))
+		p.table.SetCell(r, 3, textCell(format.Trunc(pipe.User, 16)))
+		// HMS matches the Current tree's TIME column above for a consistent look.
+		p.table.SetCell(r, colDuration, numCell(format.HMS(pipe.Duration)))
+		p.table.SetCell(r, colWhen, numCell(format.Ago(pipe.Finished)))
+	}
 }
 
 // Current table column indices. USER (who triggered the pipeline) is filled on
