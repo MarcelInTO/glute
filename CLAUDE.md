@@ -102,15 +102,21 @@ Keep it CGO-free so cross-compilation stays trivial.
 ## TUI notes
 
 - **Tabs: Current (default) · Pipelines · Jobs.** *Current* is the live-monitoring
-  view: a single indented, scrollable table of the active-pipeline tree — each
-  active root pipeline, its jobs (grouped by stage), and its downstream child
-  pipelines nested one level deeper (marked `↳`), with a subtree jobs-done/total
-  progress column. The tree is built by the pure `activePipelines` aggregate over
-  the retained store; the parent→child edges come from `childPipes`/`childParent`,
-  which the job-tree walk records for active roots (so they're fresh on every warm
-  refresh and self-heal one refresh after a cold start / resync, where the bulk
-  job path learns no edges). Pipelines/Jobs remain the optimization-oriented
-  stats tabs (their Running panels are slated to be replaced by more stats).
+  view, split top-to-bottom into the **active-pipeline tree** (top ~2/3) and a
+  **"recently finished pipelines"** panel (bottom ~1/3). The tree is a single
+  indented, scrollable table — each active root pipeline, its jobs (grouped by
+  stage), and its downstream child pipelines nested one level deeper (marked `↳`),
+  with a subtree jobs-done/total progress column. The tree is built by the pure
+  `activePipelines` aggregate over the retained store; the parent→child edges come
+  from `childPipes`/`childParent`, which the job-tree walk records for active roots
+  (so they're fresh on every warm refresh and self-heal one refresh after a cold
+  start / resync, where the bulk job path learns no edges). The finished panel
+  (`fillFinishedPipelines`) lists the snapshot's `RecentPipelines` (already
+  finished-only, newest-finished first) so a pipeline you were watching keeps its
+  outcome after it drops out of the tree — but only finished **root** pipelines
+  (children are excluded from the store), within the recent window. Pipelines/Jobs
+  remain the optimization-oriented stats tabs (their Running panels are slated to
+  be replaced by more stats).
 - **Job order within a pipeline** follows execution order, matching the GitLab UI:
   `sortPipelineJobs` orders by job **dependency** (`needs:`), not stage, because
   many pipelines drive execution with `needs` and dependencies override stages.
@@ -137,7 +143,25 @@ Keep it CGO-free so cross-compilation stays trivial.
   would point at the wrong row once scrolled.
 - tview has no native tooltip — on the non-scrolling tabs, "hover" reveals a
   row's full project path in the footer via a mouse-motion capture (falls back to
-  click).
+  click). The Current tab's finished panel (non-scrolling, stable row math) gets
+  this hover reveal too, but only while the cursor is over one of its rows, so it
+  doesn't clobber the tree's selection-derived footer path.
+- **tview `Table` parks at the bottom of an overflowing list if it first renders
+  empty.** When a `Table` (no cell borders) first draws with content that fits its
+  pane — which every panel does on the empty first render, before the initial
+  refresh lands — tview sets a sticky `trackEnd`, and once the list later overflows
+  it keeps the view pinned to the *bottom*, hiding the newest rows (this was a real
+  bug in the finished panel: it showed the oldest completions, not the newest). Any
+  panel that populates after an empty render must call `ScrollToBeginning()` after
+  (re)filling — see `fillFinishedPipelines`. Watch for this when building the
+  overflowing stats panels.
+- **Display conventions.** Merge-request pipeline refs
+  (`refs/merge-requests/<n>/head|merge`) render as `MR <n>` via `displayRef` (used
+  by both the Current tree label and the finished panel); branches/tags pass
+  through. A numeric column right-aligns its **header** to match its right-aligned
+  data (`setCurrentHeader` does this for TIME/DONE, `fillFinishedPipelines` for
+  DURATION/WHEN); the Pipelines/Jobs stats tabs still left-align their numeric
+  headers and show raw refs — apply both when those tabs are reworked.
 - A TUI owns the screen, so logs go to `<instance dir>/glute.log`, never stdout.
 - **Diagnosing a hang:** `kill -USR1 <pid>` dumps every goroutine's stack to
   `glute.log` (`watchDumpSignal` in `app.go`; SIGUSR1 is Unix-only, no-op on
