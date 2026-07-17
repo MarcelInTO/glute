@@ -67,6 +67,18 @@ aggregation (no group-by/avg/count) — you still pull records and aggregate
 client-side, same as REST. Its benefit is precise field selection and fewer
 round-trips, not SQL-like querying; don't over-expect it when designing stats.
 
+As of 2026-07-17 (committed + pushed to `main`, `2babfde`): the Current tab is
+now **split** — the active tree (top ~2/3) plus a new **"recently finished
+pipelines"** panel (bottom ~1/3), newest-first from `RecentPipelines`, so a
+pipeline's outcome stays visible after it leaves the tree. Durations use
+`format.HMS` (matching the tree's TIME column), MR refs display as `MR <n>`
+(`displayRef`), and the panel calls `ScrollToBeginning()` each refresh to defeat
+tview's sticky `trackEnd` — a `Table` first rendered empty otherwise pins an
+overflowing list to its *oldest* rows (this was the actual bug; the data/sort
+were correct all along). **Deferred:** the right-align-numeric-headers fix and
+the `MR <n>` ref display aren't yet applied to the Pipelines/Jobs tabs — do both
+during the stats rework (part 2 below).
+
 **KNOWN ISSUE (unresolved):** glute has hit an **intermittent 100%-CPU hang** —
 unresponsive to keys and Ctrl-C, no redraw. Seen once on the `b7eb264` build
 (pre-timer-work, so not caused by it), after ~1h idle with 0 running pipelines;
