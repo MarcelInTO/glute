@@ -75,9 +75,28 @@ pipeline's outcome stays visible after it leaves the tree. Durations use
 (`displayRef`), and the panel calls `ScrollToBeginning()` each refresh to defeat
 tview's sticky `trackEnd` — a `Table` first rendered empty otherwise pins an
 overflowing list to its *oldest* rows (this was the actual bug; the data/sort
-were correct all along). **Deferred:** the right-align-numeric-headers fix and
-the `MR <n>` ref display aren't yet applied to the Pipelines/Jobs tabs — do both
-during the stats rework (part 2 below).
+were correct all along).
+
+As of 2026-07-31 (committed to `main`, `e956af0`): the **Pipelines tab is
+reworked** from live-state panels into a **2×2 grid of historical-analysis
+panels** over the Top window (part 2, Pipelines half — DONE). Panels: **Fails
+most often** (projects by failure rate, `minFailRuns` floor), **Slowest**
+(per-project wall-clock min/mean/p95/max), **Tag performance** and **Runner
+performance** (job load — jobs/compute/mean-queue — keyed by the tags jobs were
+invoked with, resp. the runner that ran them; two keyings of one `jobStats`
+accumulator over the same job population). All ref-dropped, keyed by
+project/tag/runner. New pure aggregates in `aggregate.go` (`pipelineStats` →
+both Fails+Slowest; `jobStats` → both `tagStats`+`runnerStats`;
+`computeByProduct`/`computeByProject`; `percentile`) over the existing window
+slices — **no store change**. New Snapshot fields + `PipelineStats`/
+`ComputeAgg`/`JobStats` types; **"compute" = Σ `Job.Duration`**, the non-admin
+proxy for runner-time (not pipeline wall-clock). Tag keying needed `Job.Tags`,
+now carried on **both** job-fetch paths (REST `tag_list`, GraphQL `CiJob.tags`).
+`format.Compute` added; `--sample` fixtures + `refresh` dump + CLAUDE.md
+updated; new unit tests + updated render tests all pass. The
+right-align-headers convention is now applied to Pipelines (via
+`rightAlignHeaders`); the ref is dropped so `MR <n>` display is moot there.
+**Still deferred to the Jobs-tab rework:** right-align headers + `MR <n>` ref.
 
 **KNOWN ISSUE (unresolved):** glute has hit an **intermittent 100%-CPU hang** —
 unresponsive to keys and Ctrl-C, no redraw. Seen once on the `b7eb264` build
@@ -92,8 +111,13 @@ non-child). **If it recurs: `kill -USR1 <pid>` first, then read the dump in
 **Why:** Records live status and next-steps that aren't obvious from the code.
 
 **How to apply:**
-- **Next:** part (2) above — rework the Pipelines/Jobs tabs into stats panels
-  (drop their now-redundant Running panels, since Current supersedes them).
+- **Next:** rework the **Jobs tab** the same way the Pipelines tab was (drop its
+  redundant Running panel; add optimization-oriented job-level stats). Follow-ups
+  noted during the Pipelines rework: a compute-by-product panel was dropped as
+  unhelpful (dull with a single configured product) but `ComputeByProduct`/
+  `ByProject` remain in the Snapshot (used by the `refresh` preview) if a panel
+  ever wants them; a like-for-like runner comparison (same job on ≥2 runners) and
+  a failure-reason breakdown (`Job.FailureReason`) were scoped out as future panels.
 - **Also queued (polish pass):** scroll long tables on the stats tabs, responsive
   column widths, and surface the footer warning's detail in the UI.
 - **Deferred:** the Runners tab (dropped — admin-only metric); release
