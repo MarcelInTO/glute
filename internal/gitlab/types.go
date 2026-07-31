@@ -83,6 +83,7 @@ type Job struct {
 	WebURL        string
 	FailureReason string
 	Runner        string   // the runner the job ran on (its description, else name)
+	Tags          []string // runner tags the job was invoked with (tags:), empty if none
 	Needs         []string // names of the jobs this job depends on (needs:), empty if none/unknown
 	Created       time.Time
 	Started       time.Time
@@ -130,6 +131,61 @@ func (a JobAgg) SuccessRate() float64 {
 	return 0
 }
 
+// PipelineStats summarizes a project's pipeline runs over the Top window,
+// aggregated across all refs (the historical Pipelines tab analyses per project,
+// not per ref). It powers both the "fails most often" and "slowest" panels — one
+// grouping, two sorts. The duration fields describe the distribution over runs
+// with a known duration (KnownDurations); DurMean is the arithmetic mean and
+// DurP95 the 95th-percentile (nearest-rank) run.
+type PipelineStats struct {
+	ProjectPath    string
+	Runs           int
+	Succeeded      int
+	Failed         int
+	Canceled       int
+	KnownDurations int
+	DurMin         time.Duration
+	DurMean        time.Duration
+	DurP95         time.Duration
+	DurMax         time.Duration
+}
+
+// FailRate is failed / runs (0 when there were no runs). Unlike SuccessRate it's
+// over all runs, not just success+failed, so canceled/skipped runs dilute it —
+// the "fails most often" panel wants "of everything that ran, how much failed".
+func (s PipelineStats) FailRate() float64 {
+	if s.Runs > 0 {
+		return float64(s.Failed) / float64(s.Runs)
+	}
+	return 0
+}
+
+// ComputeAgg is total runner time consumed by a key (a product or a project)
+// over the Top window: the sum of job durations, the honest non-admin proxy for
+// "compute used" (each job occupies one runner for its duration). Pct is this
+// key's share of the grand total across all keys.
+type ComputeAgg struct {
+	Key     string
+	Runs    int // jobs that contributed
+	Compute time.Duration
+	Pct     float64
+}
+
+// JobStats summarizes the jobs grouped under one key — a runner, or a runner
+// tag jobs were invoked with — over the Top window: how many ran, the runner
+// time they consumed, their mean duration, and their queue-wait distribution
+// (how long they waited to be picked up — a saturation signal).
+// Means/percentiles are over jobs with a known value.
+type JobStats struct {
+	Key          string
+	Jobs         int
+	Failed       int
+	Compute      time.Duration
+	MeanDuration time.Duration
+	MeanQueue    time.Duration
+	P95Queue     time.Duration
+}
+
 // ActivePipeline is one node of the Current tab's tree: a pipeline together with
 // the jobs that belong directly to it and its downstream child pipelines
 // (recursively). Roots are the currently-active top-level pipelines; a root's
@@ -175,6 +231,18 @@ type Snapshot struct {
 	RunningJobs []Job
 	RecentJobs  []Job
 	TopJobs     []JobAgg
+
+	// Historical Pipelines-tab analytics over the Top window, aggregated by
+	// project/tag/runner (ref is deliberately dropped — the analysis is
+	// per project, not per ref). PipelineStats feeds both the "fails most often"
+	// and "slowest" panels; TagStats/RunnerStats compare job load (throughput,
+	// compute, queue wait) grouped by runner tag resp. runner. The
+	// ComputeByProduct/Project rollups feed only the `refresh` text preview.
+	PipelineStats    []PipelineStats
+	ComputeByProduct []ComputeAgg
+	ComputeByProject []ComputeAgg
+	RunnerStats      []JobStats
+	TagStats         []JobStats
 
 	UpdatedAt time.Time
 	// Errors holds non-fatal, per-project failures from the refresh; the

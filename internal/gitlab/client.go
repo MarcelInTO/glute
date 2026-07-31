@@ -189,8 +189,9 @@ func scopeValues(scopes []Status) *[]glab.BuildStateValue {
 }
 
 // pipelineJobsQuery fetches one pipeline's own fields plus its jobs — each with
-// its needs: dependencies, stage, runner, and (for bridge jobs) the downstream
-// child pipeline it triggers. The jobs connection is paginated via $cursor.
+// its needs: dependencies, stage, runner, tags, and (for bridge jobs) the
+// downstream child pipeline it triggers. The jobs connection is paginated via
+// $cursor.
 const pipelineJobsQuery = `query PipelineJobs($path: ID!, $iid: ID!, $cursor: String) {
   project(fullPath: $path) {
     pipeline(iid: $iid) {
@@ -215,6 +216,7 @@ const pipelineJobsQuery = `query PipelineJobs($path: ID!, $iid: ID!, $cursor: St
           duration
           queuedDuration
           stage { name }
+          tags
           needs { nodes { name } }
           runnerManager { runner { description } }
           downstreamPipeline { iid project { fullPath } }
@@ -237,6 +239,7 @@ type gqlJobNode struct {
 	Stage          *struct {
 		Name string `json:"name"`
 	} `json:"stage"`
+	Tags  []string `json:"tags"`
 	Needs struct {
 		Nodes []struct {
 			Name string `json:"name"`
@@ -382,6 +385,7 @@ func mapGQLJob(n *gqlJobNode, projectPath string, pipelineID int64) Job {
 		Status:      Status(strings.ToLower(n.Status)),
 		ProjectPath: projectPath,
 		PipelineID:  pipelineID,
+		Tags:        n.Tags,
 		Created:     derefTime(n.CreatedAt),
 		Started:     derefTime(n.StartedAt),
 		Finished:    derefTime(n.FinishedAt),
@@ -501,6 +505,7 @@ func mapJob(j *glab.Job) Job {
 		WebURL:        j.WebURL,
 		FailureReason: j.FailureReason,
 		Runner:        runnerName(j.Runner),
+		Tags:          j.TagList,
 		Created:       derefTime(j.CreatedAt),
 		Started:       derefTime(j.StartedAt),
 		Finished:      derefTime(j.FinishedAt),

@@ -38,7 +38,7 @@ const samplePipelinePayload = `{
       "nodes": [
         {"id":"gid://gitlab/Ci::Build/100","name":"build","kind":"BUILD","status":"SUCCESS",
          "createdAt":"2026-07-14T13:00:00Z","startedAt":"2026-07-14T13:00:05Z","finishedAt":"2026-07-14T13:00:20Z",
-         "duration":15,"queuedDuration":2,"stage":{"name":"build"},"needs":{"nodes":[]},
+         "duration":15,"queuedDuration":2,"stage":{"name":"build"},"tags":["linux","docker"],"needs":{"nodes":[]},
          "runnerManager":{"runner":{"description":"linux-docker-1"}},"downstreamPipeline":null},
         {"id":"gid://gitlab/Ci::Build/101","name":"test","kind":"BUILD","status":"RUNNING",
          "startedAt":"2026-07-14T13:00:25Z","stage":{"name":"test"},"needs":{"nodes":[{"name":"build"}]},
@@ -82,8 +82,11 @@ func TestCollectPipelineNodeMapsJobsAndChildren(t *testing.T) {
 		build.Duration != 15*time.Second || build.Queued != 2*time.Second || len(build.Needs) != 0 {
 		t.Errorf("build job mapped wrong: %+v", build)
 	}
+	if len(build.Tags) != 2 || build.Tags[0] != "linux" || build.Tags[1] != "docker" {
+		t.Errorf("build job tags = %v, want [linux docker]", build.Tags)
+	}
 	if testJob.ID != 101 || testJob.Status != StatusRunning || testJob.Runner != "linux-docker-2" ||
-		len(testJob.Needs) != 1 || testJob.Needs[0] != "build" {
+		len(testJob.Needs) != 1 || testJob.Needs[0] != "build" || len(testJob.Tags) != 0 {
 		t.Errorf("test job mapped wrong: %+v", testJob)
 	}
 

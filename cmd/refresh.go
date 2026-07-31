@@ -83,19 +83,41 @@ func printSnapshot(s gitlab.Snapshot) {
 		printActive(ap, 0)
 	}
 
-	fmt.Printf("\n[running pipelines: %d]\n", len(s.RunningPipelines))
-	for _, p := range head(s.RunningPipelines, 10) {
-		fmt.Printf("  %-30s %-18s %-9s  %s\n", format.Trunc(p.ProjectPath, 30), format.Trunc(p.Ref, 18), p.Status, format.Elapsed(p.Started, p.Created))
-	}
-
 	fmt.Printf("\n[recent pipelines: %d]\n", len(s.RecentPipelines))
 	for _, p := range head(s.RecentPipelines, 10) {
 		fmt.Printf("  %-30s %-18s %-9s %9s  %s ago\n", format.Trunc(p.ProjectPath, 30), format.Trunc(p.Ref, 18), p.Status, format.Duration(p.Duration), format.Ago(p.Finished))
 	}
 
-	fmt.Printf("\n[top pipelines / avg length: %d]\n", len(s.TopPipelines))
-	for _, a := range head(s.TopPipelines, 10) {
-		fmt.Printf("  %-30s %-18s runs=%-5d avg=%9s  success=%3.0f%%\n", format.Trunc(a.ProjectPath, 30), format.Trunc(a.Ref, 18), a.Count, format.Duration(a.AvgDuration), a.SuccessRate()*100)
+	// The Pipelines tab's historical analytics, aggregated by project/product/runner.
+	fmt.Printf("\n[pipeline stats · by project: %d]\n", len(s.PipelineStats))
+	for _, a := range head(s.PipelineStats, 10) {
+		fmt.Printf("  %-30s runs=%-5d fail=%-4d(%3.0f%%) dur min/mean/p95/max = %s / %s / %s / %s\n",
+			format.Trunc(a.ProjectPath, 30), a.Runs, a.Failed, a.FailRate()*100,
+			format.Duration(a.DurMin), format.Duration(a.DurMean), format.Duration(a.DurP95), format.Duration(a.DurMax))
+	}
+
+	fmt.Printf("\n[compute · by product: %d]\n", len(s.ComputeByProduct))
+	for _, a := range head(s.ComputeByProduct, 10) {
+		fmt.Printf("  %-24s compute=%8s (%3.0f%%)  jobs=%d\n", format.Trunc(a.Key, 24), format.Compute(a.Compute), a.Pct, a.Runs)
+	}
+
+	fmt.Printf("\n[compute · by project: %d]\n", len(s.ComputeByProject))
+	for _, a := range head(s.ComputeByProject, 10) {
+		fmt.Printf("  %-30s compute=%8s (%3.0f%%)  jobs=%d\n", format.Trunc(a.Key, 30), format.Compute(a.Compute), a.Pct, a.Runs)
+	}
+
+	fmt.Printf("\n[tag performance: %d]\n", len(s.TagStats))
+	for _, a := range head(s.TagStats, 10) {
+		fmt.Printf("  %-30s jobs=%-5d compute=%8s mean=%8s queue mean/p95 = %s / %s  fail=%d\n",
+			format.Trunc(a.Key, 30), a.Jobs, format.Compute(a.Compute), format.Duration(a.MeanDuration),
+			format.Duration(a.MeanQueue), format.Duration(a.P95Queue), a.Failed)
+	}
+
+	fmt.Printf("\n[runner performance: %d]\n", len(s.RunnerStats))
+	for _, a := range head(s.RunnerStats, 10) {
+		fmt.Printf("  %-30s jobs=%-5d compute=%8s mean=%8s queue mean/p95 = %s / %s  fail=%d\n",
+			format.Trunc(a.Key, 30), a.Jobs, format.Compute(a.Compute), format.Duration(a.MeanDuration),
+			format.Duration(a.MeanQueue), format.Duration(a.P95Queue), a.Failed)
 	}
 
 	fmt.Printf("\n[running jobs: %d]\n", len(s.RunningJobs))

@@ -190,7 +190,15 @@ func TestDashboardRendersPipelinesTab(t *testing.T) {
 	out := renderToText(t, d, 130, 32)
 	t.Logf("Pipelines tab:\n%s", out)
 
-	for _, want := range []string{"glute", "Pipelines", "Jobs", "Running pipelines", "gateway", "success", "RUNS", "updated"} {
+	// The four historical-analysis panels, their columns, and a value from each:
+	// the fails/slowest project (gateway), a runner tag (windows, plus the
+	// untagged bucket), and a runner (docker-builder).
+	for _, want := range []string{
+		"glute", "Pipelines", "Jobs",
+		"Fails most often", "Slowest", "Tag performance", "Runner performance",
+		"RUNS", "MEAN", "P95", "COMPUTE", "QUEUE",
+		"gateway", "windows", "(untagged)", "docker-builder", "updated",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("pipelines render missing %q", want)
 		}
@@ -206,9 +214,12 @@ func TestHoverRevealsFullPath(t *testing.T) {
 	d.selectTab(1)                  // Pipelines
 	_ = renderToText(t, d, 130, 32) // draw once so GetInnerRect is populated
 
-	ix, iy, _, _ := d.pipelines.running.table.GetInnerRect()
-	if path, ok := d.pipelines.hoverPathAt(ix+1, iy+1); !ok || path != "acme/payments/api" {
-		t.Fatalf("hover over first running row = (%q, %v), want acme/payments/api", path, ok)
+	// The "fails most often" panel is project-keyed; its first row is the
+	// highest-fail-rate project (gateway, 21/141), so a hover there reveals the
+	// full path behind the truncated cell.
+	ix, iy, _, _ := d.pipelines.fails.table.GetInnerRect()
+	if path, ok := d.pipelines.hoverPathAt(ix+1, iy+1); !ok || path != "acme/platform/gateway" {
+		t.Fatalf("hover over first fails row = (%q, %v), want acme/platform/gateway", path, ok)
 	}
 	if _, ok := d.pipelines.hoverPathAt(ix+1, iy); ok {
 		t.Errorf("hover over the header row should reveal nothing")

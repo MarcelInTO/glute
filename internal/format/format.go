@@ -15,6 +15,25 @@ func Duration(d time.Duration) string {
 	return d.Round(time.Second).String()
 }
 
+// Compute renders a summed runner-time total compactly, trading precision for
+// width as the magnitude grows: seconds ("15s") and minutes ("42m") below an
+// hour, one decimal hour up to ten hours ("1.5h", "9.9h"), then whole hours
+// ("212h") where the dropped minutes are negligible. Non-positive → em dash.
+func Compute(d time.Duration) string {
+	switch {
+	case d <= 0:
+		return "—"
+	case d >= 10*time.Hour:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	case d >= time.Hour:
+		return fmt.Sprintf("%.1fh", d.Hours())
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	default:
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	}
+}
+
 // Ago renders how long ago t was, coarsely (s/m/h/d), or "?" for the zero time.
 func Ago(t time.Time) string {
 	if t.IsZero() {

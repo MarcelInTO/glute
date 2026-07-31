@@ -1,6 +1,7 @@
 package gitlab
 
 import (
+	"math"
 	"sort"
 	"time"
 )
@@ -332,6 +333,224 @@ func topJobs(jobs []Job, limit int) []JobAgg {
 		return out[i].Name < out[j].Name
 	})
 	return capAggJobs(out, limit)
+}
+
+// pipelineStats aggregates pipeline runs by project (ref dropped) over the whole
+// slice, computing each project's run/outcome tallies and its duration
+// distribution across runs with a known duration. It's the single source for the
+// Pipelines tab's "fails most often" and "slowest" panels — each sorts this its
+// own way — so it returns every project ordered only by path, for a stable base.
+func pipelineStats(pipes []Pipeline) []PipelineStats {
+	type acc struct {
+		stats PipelineStats
+		durs  []time.Duration
+	}
+	byPath := map[string]*acc{}
+	for _, p := range pipes {
+		a := byPath[p.ProjectPath]
+		if a == nil {
+			a = &acc{stats: PipelineStats{ProjectPath: p.ProjectPath}}
+			byPath[p.ProjectPath] = a
+		}
+		a.stats.Runs++
+		switch p.Status {
+		case StatusSuccess:
+			a.stats.Succeeded++
+		case StatusFailed:
+			a.stats.Failed++
+		case StatusCanceled:
+			a.stats.Canceled++
+		}
+		if p.Duration > 0 {
+			a.durs = append(a.durs, p.Duration)
+		}
+	}
+
+	out := make([]PipelineStats, 0, len(byPath))
+	for _, a := range byPath {
+		sort.Slice(a.durs, func(i, j int) bool { return a.durs[i] < a.durs[j] })
+		a.stats.KnownDurations = len(a.durs)
+		if n := len(a.durs); n > 0 {
+			var sum time.Duration
+			for _, d := range a.durs {
+				sum += d
+			}
+			a.stats.DurMin = a.durs[0]
+			a.stats.DurMax = a.durs[n-1]
+			a.stats.DurMean = sum / time.Duration(n)
+			a.stats.DurP95 = percentile(a.durs, 0.95)
+		}
+		out = append(out, a.stats)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ProjectPath < out[j].ProjectPath })
+	return out
+}
+
+// computeByProject sums job runner-time by project over the whole slice. Every
+// job maps to exactly one project, so the Pct column sums to 100%.
+func computeByProject(jobs []Job) []ComputeAgg {
+	return computeAgg(jobs, func(j Job) []string {
+		if j.ProjectPath == "" {
+			return nil
+		}
+		return []string{j.ProjectPath}
+	})
+}
+
+// computeByProduct sums job runner-time by product, mapping each job's project to
+// the product(s) that watch it. A project may belong to more than one product, so
+// a shared project's jobs count toward each — which means the Pct column can
+// exceed 100% under overlap (each row's share is still of the one true grand
+// total). Jobs whose project maps to no product (e.g. a cross-project downstream
+// child outside the watchlist) contribute to the grand total but to no row.
+func computeByProduct(jobs []Job, projectProducts map[string][]string) []ComputeAgg {
+	return computeAgg(jobs, func(j Job) []string {
+		return projectProducts[j.ProjectPath]
+	})
+}
+
+// computeAgg sums each job's duration (its runner-time) into every key that
+// keysOf maps it to, and computes each key's Pct of the grand total — the sum of
+// every job's duration counted once, independent of keying. Grouping the same
+// jobs by a partition (one key each) therefore yields Pcts summing to 100%;
+// grouping by an overlapping mapping can exceed it. A job with no known duration
+// still counts toward Runs but adds no time.
+func computeAgg(jobs []Job, keysOf func(Job) []string) []ComputeAgg {
+	byKey := map[string]*ComputeAgg{}
+	var total time.Duration
+	for _, j := range jobs {
+		total += j.Duration
+		for _, k := range keysOf(j) {
+			a := byKey[k]
+			if a == nil {
+				a = &ComputeAgg{Key: k}
+				byKey[k] = a
+			}
+			a.Runs++
+			a.Compute += j.Duration
+		}
+	}
+
+	out := make([]ComputeAgg, 0, len(byKey))
+	for _, a := range byKey {
+		if total > 0 {
+			a.Pct = float64(a.Compute) / float64(total) * 100
+		}
+		out = append(out, *a)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Compute != out[j].Compute {
+			return out[i].Compute > out[j].Compute
+		}
+		return out[i].Key < out[j].Key
+	})
+	return out
+}
+
+// untaggedKey buckets jobs invoked with no runner tags in tagStats, so untagged
+// load stays visible next to the tagged kinds rather than silently vanishing.
+const untaggedKey = "(untagged)"
+
+// runnerStats groups job load by the runner that ran each job.
+func runnerStats(jobs []Job) []JobStats {
+	return jobStats(jobs, func(j Job) []string { return []string{j.Runner} })
+}
+
+// tagStats groups job load by the runner tags jobs were invoked with — the tags
+// decide which runners may pick a job up, so this shows what each requested
+// kind of capacity costs and how saturated it is. A multi-tagged job counts
+// toward each of its tags (rows overlap, like computeByProduct); a job with no
+// tags lands in the untaggedKey bucket. Same job population as runnerStats, so
+// the two panels are two groupings of the same work.
+func tagStats(jobs []Job) []JobStats {
+	return jobStats(jobs, func(j Job) []string {
+		if len(j.Tags) == 0 {
+			return []string{untaggedKey}
+		}
+		return j.Tags
+	})
+}
+
+// jobStats aggregates jobs into per-key load stats, over the whole slice:
+// throughput (Jobs), runner-time consumed (Compute), mean job duration, and the
+// queue-wait distribution (mean + p95 of how long jobs waited to be picked up —
+// a saturation signal). keysOf maps a job to every key it counts toward. Only
+// jobs a runner has picked up count (Runner != ""): a still-queued job has no
+// duration or queue wait to measure yet. Means/percentiles are over jobs with a
+// known value. Ordered by Compute descending (the biggest consumers first).
+func jobStats(jobs []Job, keysOf func(Job) []string) []JobStats {
+	type acc struct {
+		stats    JobStats
+		durSum   time.Duration
+		durN     int
+		queues   []time.Duration
+		queueSum time.Duration
+	}
+	byKey := map[string]*acc{}
+	for _, j := range jobs {
+		if j.Runner == "" {
+			continue
+		}
+		for _, k := range keysOf(j) {
+			a := byKey[k]
+			if a == nil {
+				a = &acc{stats: JobStats{Key: k}}
+				byKey[k] = a
+			}
+			a.stats.Jobs++
+			if j.Status == StatusFailed {
+				a.stats.Failed++
+			}
+			a.stats.Compute += j.Duration
+			if j.Duration > 0 {
+				a.durSum += j.Duration
+				a.durN++
+			}
+			if j.Queued > 0 {
+				a.queues = append(a.queues, j.Queued)
+				a.queueSum += j.Queued
+			}
+		}
+	}
+
+	out := make([]JobStats, 0, len(byKey))
+	for _, a := range byKey {
+		if a.durN > 0 {
+			a.stats.MeanDuration = a.durSum / time.Duration(a.durN)
+		}
+		if n := len(a.queues); n > 0 {
+			sort.Slice(a.queues, func(i, j int) bool { return a.queues[i] < a.queues[j] })
+			a.stats.MeanQueue = a.queueSum / time.Duration(n)
+			a.stats.P95Queue = percentile(a.queues, 0.95)
+		}
+		out = append(out, a.stats)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Compute != out[j].Compute {
+			return out[i].Compute > out[j].Compute
+		}
+		return out[i].Key < out[j].Key
+	})
+	return out
+}
+
+// percentile returns the p-th percentile (p in [0,1]) of an ascending-sorted
+// duration slice by the nearest-rank method, or 0 for an empty slice. p95 of a
+// small sample is its max — deliberately, since the panels want the worst run a
+// user actually feels, not an interpolated estimate.
+func percentile(sorted []time.Duration, p float64) time.Duration {
+	n := len(sorted)
+	if n == 0 {
+		return 0
+	}
+	rank := int(math.Ceil(p * float64(n)))
+	switch {
+	case rank < 1:
+		rank = 1
+	case rank > n:
+		rank = n
+	}
+	return sorted[rank-1]
 }
 
 func capAgg(s []PipelineAgg, limit int) []PipelineAgg {

@@ -81,7 +81,7 @@ func NewDashboard(svc gitlab.Service, opts Options) *Dashboard {
 	}
 
 	current := newCurrentView(opts.RunnerAliases)
-	pipe := newPipelineView()
+	pipe := newPipelineView(opts.RunnerAliases)
 	jobs := newJobView()
 
 	pages := tview.NewPages()

@@ -244,6 +244,204 @@ func TestActivePipelinesToleratesEdgeCycle(t *testing.T) {
 	}
 }
 
+func TestPipelineStatsDropsRefAndDistributes(t *testing.T) {
+	// Two refs of the same project collapse into one row (the historical analysis
+	// is per project, not per ref). The five known durations 1..5m give min=1m,
+	// max=5m, mean=3m, and p95 (nearest-rank of 5 samples) = the 5th = 5m. A
+	// zero-duration (still-running) run counts toward Runs but not the distribution.
+	pipes := []Pipeline{
+		{ProjectPath: "a/x", Ref: "main", Status: StatusSuccess, Duration: 1 * time.Minute},
+		{ProjectPath: "a/x", Ref: "main", Status: StatusSuccess, Duration: 2 * time.Minute},
+		{ProjectPath: "a/x", Ref: "dev", Status: StatusFailed, Duration: 3 * time.Minute},
+		{ProjectPath: "a/x", Ref: "dev", Status: StatusCanceled, Duration: 4 * time.Minute},
+		{ProjectPath: "a/x", Ref: "main", Status: StatusSuccess, Duration: 5 * time.Minute},
+		{ProjectPath: "a/x", Ref: "main", Status: StatusRunning, Duration: 0}, // unknown dur
+	}
+	got := pipelineStats(pipes)
+	if len(got) != 1 {
+		t.Fatalf("want 1 project row (ref dropped), got %d: %+v", len(got), got)
+	}
+	s := got[0]
+	if s.ProjectPath != "a/x" {
+		t.Fatalf("path = %q, want a/x", s.ProjectPath)
+	}
+	if s.Runs != 6 || s.Succeeded != 3 || s.Failed != 1 || s.Canceled != 1 {
+		t.Errorf("tallies: runs=%d succ=%d fail=%d cancel=%d", s.Runs, s.Succeeded, s.Failed, s.Canceled)
+	}
+	if s.KnownDurations != 5 {
+		t.Errorf("known durations: want 5, got %d", s.KnownDurations)
+	}
+	if s.DurMin != time.Minute || s.DurMean != 3*time.Minute || s.DurMax != 5*time.Minute {
+		t.Errorf("dur min/mean/max: got %s / %s / %s, want 1m / 3m / 5m", s.DurMin, s.DurMean, s.DurMax)
+	}
+	if s.DurP95 != 5*time.Minute {
+		t.Errorf("p95: want 5m, got %s", s.DurP95)
+	}
+	if s.FailRate() != 1.0/6.0 {
+		t.Errorf("fail rate: want 1/6 (of all runs), got %v", s.FailRate())
+	}
+}
+
+func TestPipelineStatsKeepsProjectWithNoKnownDurations(t *testing.T) {
+	// A project whose runs have no finished duration still gets a row — with a
+	// zeroed distribution — so the fails panel can surface it; the slowest panel
+	// filters KnownDurations==0 itself.
+	pipes := []Pipeline{
+		{ProjectPath: "a/x", Status: StatusRunning},
+		{ProjectPath: "a/x", Status: StatusFailed}, // failed, but duration unknown
+	}
+	got := pipelineStats(pipes)
+	if len(got) != 1 || got[0].Runs != 2 || got[0].KnownDurations != 0 {
+		t.Fatalf("want 1 row runs=2 known=0, got %+v", got)
+	}
+	if got[0].DurMean != 0 || got[0].DurP95 != 0 || got[0].DurMax != 0 {
+		t.Errorf("distribution should be zero with no known durations, got %+v", got[0])
+	}
+}
+
+func TestComputeByProject(t *testing.T) {
+	// a/x consumes 6m across two jobs, b/y 2m — total 8m, so shares are 75/25 and
+	// the busier project leads.
+	jobs := []Job{
+		{ProjectPath: "a/x", Duration: 3 * time.Minute},
+		{ProjectPath: "a/x", Duration: 3 * time.Minute},
+		{ProjectPath: "b/y", Duration: 2 * time.Minute},
+	}
+	got := computeByProject(jobs)
+	if len(got) != 2 {
+		t.Fatalf("want 2 rows, got %d: %+v", len(got), got)
+	}
+	if got[0].Key != "a/x" || got[0].Compute != 6*time.Minute || got[0].Runs != 2 {
+		t.Errorf("top row: key=%s compute=%s runs=%d", got[0].Key, got[0].Compute, got[0].Runs)
+	}
+	if got[0].Pct != 75 || got[1].Pct != 25 {
+		t.Errorf("shares: got %.0f / %.0f, want 75 / 25 (sum to 100)", got[0].Pct, got[1].Pct)
+	}
+}
+
+func TestComputeByProductOverlapAndUnmapped(t *testing.T) {
+	// a/x belongs to both Payments and Platform, so its 6m counts toward each —
+	// the product shares then exceed 100% of the grand total. c/z maps to no
+	// product (a downstream child outside the watchlist): it lifts the grand total
+	// but appears in no product row.
+	jobs := []Job{
+		{ProjectPath: "a/x", Duration: 6 * time.Minute},
+		{ProjectPath: "b/y", Duration: 2 * time.Minute},
+		{ProjectPath: "c/z", Duration: 2 * time.Minute}, // unmapped
+	}
+	pp := map[string][]string{
+		"a/x": {"Payments", "Platform"},
+		"b/y": {"Platform"},
+	}
+	got := computeByProduct(jobs, pp)
+	if len(got) != 2 {
+		t.Fatalf("want 2 product rows (c/z unmapped), got %d: %+v", len(got), got)
+	}
+	byKey := map[string]ComputeAgg{}
+	for _, a := range got {
+		byKey[a.Key] = a
+	}
+	// Payments = a/x = 6m; Platform = a/x + b/y = 8m.
+	if byKey["Payments"].Compute != 6*time.Minute || byKey["Platform"].Compute != 8*time.Minute {
+		t.Errorf("compute: payments=%s platform=%s, want 6m / 8m", byKey["Payments"].Compute, byKey["Platform"].Compute)
+	}
+	// Pct is of the 10m grand total (c/z included), so 60 + 80 = 140 > 100.
+	if byKey["Payments"].Pct != 60 || byKey["Platform"].Pct != 80 {
+		t.Errorf("shares: payments=%.0f platform=%.0f, want 60 / 80", byKey["Payments"].Pct, byKey["Platform"].Pct)
+	}
+	if got[0].Key != "Platform" {
+		t.Errorf("sort by compute desc: want Platform first, got %s", got[0].Key)
+	}
+}
+
+func TestRunnerStats(t *testing.T) {
+	// Jobs with no runner are skipped. r1 runs three jobs (durations 2/4/6m →
+	// mean 4m, compute 12m) with one failure; its queue waits 10/20/30s give mean
+	// 20s and p95 (nearest-rank of 3) = 30s. Ordered by compute, r1 leads r2.
+	jobs := []Job{
+		{Runner: "r1", Status: StatusSuccess, Duration: 2 * time.Minute, Queued: 10 * time.Second},
+		{Runner: "r1", Status: StatusFailed, Duration: 4 * time.Minute, Queued: 20 * time.Second},
+		{Runner: "r1", Status: StatusSuccess, Duration: 6 * time.Minute, Queued: 30 * time.Second},
+		{Runner: "r2", Status: StatusSuccess, Duration: 1 * time.Minute, Queued: 5 * time.Second},
+		{Runner: "", Status: StatusSuccess, Duration: 9 * time.Minute}, // unassigned → skipped
+	}
+	got := runnerStats(jobs)
+	if len(got) != 2 {
+		t.Fatalf("want 2 runners (empty skipped), got %d: %+v", len(got), got)
+	}
+	r1 := got[0]
+	if r1.Key != "r1" || r1.Jobs != 3 || r1.Failed != 1 || r1.Compute != 12*time.Minute {
+		t.Errorf("r1: key=%s jobs=%d failed=%d compute=%s", r1.Key, r1.Jobs, r1.Failed, r1.Compute)
+	}
+	if r1.MeanDuration != 4*time.Minute {
+		t.Errorf("r1 mean duration: want 4m, got %s", r1.MeanDuration)
+	}
+	if r1.MeanQueue != 20*time.Second || r1.P95Queue != 30*time.Second {
+		t.Errorf("r1 queue mean/p95: got %s / %s, want 20s / 30s", r1.MeanQueue, r1.P95Queue)
+	}
+}
+
+func TestTagStats(t *testing.T) {
+	// A multi-tagged job counts toward each of its tags (linux gets both jobs,
+	// docker only the first); a tagless job lands in the untagged bucket; a job no
+	// runner picked up is skipped even when tagged.
+	jobs := []Job{
+		{Runner: "r1", Tags: []string{"linux", "docker"}, Status: StatusFailed, Duration: 4 * time.Minute, Queued: 20 * time.Second},
+		{Runner: "r2", Tags: []string{"linux"}, Status: StatusSuccess, Duration: 2 * time.Minute, Queued: 10 * time.Second},
+		{Runner: "r1", Status: StatusSuccess, Duration: time.Minute, Queued: 5 * time.Second},
+		{Runner: "", Tags: []string{"linux"}, Status: StatusPending},
+	}
+	got := tagStats(jobs)
+	if len(got) != 3 {
+		t.Fatalf("want 3 rows (linux, docker, untagged), got %d: %+v", len(got), got)
+	}
+	if got[0].Key != "linux" {
+		t.Errorf("sort by compute desc: want linux first, got %s", got[0].Key)
+	}
+	byKey := map[string]JobStats{}
+	for _, s := range got {
+		byKey[s.Key] = s
+	}
+	linux := byKey["linux"]
+	if linux.Jobs != 2 || linux.Failed != 1 || linux.Compute != 6*time.Minute {
+		t.Errorf("linux: jobs=%d failed=%d compute=%s, want 2/1/6m", linux.Jobs, linux.Failed, linux.Compute)
+	}
+	if linux.MeanQueue != 15*time.Second {
+		t.Errorf("linux mean queue: want 15s, got %s", linux.MeanQueue)
+	}
+	if docker := byKey["docker"]; docker.Jobs != 1 || docker.Compute != 4*time.Minute {
+		t.Errorf("docker: jobs=%d compute=%s, want 1/4m", docker.Jobs, docker.Compute)
+	}
+	if un := byKey[untaggedKey]; un.Jobs != 1 || un.Compute != time.Minute {
+		t.Errorf("untagged: jobs=%d compute=%s, want 1/1m", un.Jobs, un.Compute)
+	}
+}
+
+func TestPercentileNearestRank(t *testing.T) {
+	if got := percentile(nil, 0.95); got != 0 {
+		t.Errorf("empty slice: want 0, got %s", got)
+	}
+	secs := func(n ...int) []time.Duration {
+		out := make([]time.Duration, len(n))
+		for i, v := range n {
+			out[i] = time.Duration(v) * time.Second
+		}
+		return out
+	}
+	// Ascending-sorted input. p95 of 1..10 is the max (ceil(0.95*10)=10 → 10th);
+	// p50 is the 5th (ceil(0.5*10)=5); p95 of a single sample is that sample.
+	ten := secs(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+	if got := percentile(ten, 0.95); got != 10*time.Second {
+		t.Errorf("p95 of 1..10: want 10s, got %s", got)
+	}
+	if got := percentile(ten, 0.50); got != 5*time.Second {
+		t.Errorf("p50 of 1..10: want 5s, got %s", got)
+	}
+	if got := percentile(secs(7), 0.95); got != 7*time.Second {
+		t.Errorf("p95 of a single sample: want 7s, got %s", got)
+	}
+}
+
 func TestTopJobsGroupsByProjectAndName(t *testing.T) {
 	jobs := []Job{
 		{ProjectPath: "a/x", Name: "test", Status: StatusSuccess, Duration: time.Minute},

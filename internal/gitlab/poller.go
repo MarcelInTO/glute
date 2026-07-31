@@ -241,6 +241,7 @@ func (p *Poller) Refresh(ctx context.Context) (Snapshot, error) {
 	// 8. Derive the panels from the whole retained store.
 	pipeSlice := p.pipeSlice()
 	jobSlice := p.jobSlice()
+	projectProducts := projectProductMap(projects)
 	return Snapshot{
 		Projects:         len(projects),
 		Current:          activePipelines(pipeSlice, jobSlice, p.childPipes, p.childParent),
@@ -250,9 +251,27 @@ func (p *Poller) Refresh(ctx context.Context) (Snapshot, error) {
 		RunningJobs:      runningJobs(jobSlice),
 		RecentJobs:       recentJobs(jobSlice, recentSince),
 		TopJobs:          topJobs(jobSlice, p.opts.TopLimit),
+		PipelineStats:    pipelineStats(pipeSlice),
+		ComputeByProduct: computeByProduct(jobSlice, projectProducts),
+		ComputeByProject: computeByProject(jobSlice),
+		RunnerStats:      runnerStats(jobSlice),
+		TagStats:         tagStats(jobSlice),
 		UpdatedAt:        now,
 		Errors:           errs,
 	}, nil
+}
+
+// projectProductMap indexes each project's path to the product(s) that watch it,
+// for attributing job runner-time to products. A project can match more than one
+// product (see resolveProjects), so the value is a slice.
+func projectProductMap(projects []Project) map[string][]string {
+	m := make(map[string][]string, len(projects))
+	for _, p := range projects {
+		if len(p.Products) > 0 {
+			m[p.Path] = p.Products
+		}
+	}
+	return m
 }
 
 // resolveCached returns the resolved project set, re-resolving only when the

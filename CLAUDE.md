@@ -72,7 +72,10 @@ Keep it CGO-free so cross-compilation stays trivial.
   active/changed pipelines, since a job's state changes only as part of its
   pipeline's — that's what keeps warm refreshes off the multi-second project-wide
   sweep. Both paths share `jobFetchScopes` so the panels are consistent. Jobs
-  carry `duration` directly (no per-job enrichment).
+  carry `duration` directly (no per-job enrichment), and both paths carry the
+  job's runner **tags** (REST `tag_list`, GraphQL `CiJob.tags`) — unlike `needs:`,
+  which only GraphQL returns — so `Job.Tags` is populated regardless of which
+  path surfaced a job.
 - **Why GraphQL on the warm path.** The REST job payload has no `needs:`
   dependencies, and dependencies (not stages) determine execution order in DAG
   pipelines. GraphQL's `CiJob.needs` is the only source, so the Current tree can
@@ -114,9 +117,33 @@ Keep it CGO-free so cross-compilation stays trivial.
   (`fillFinishedPipelines`) lists the snapshot's `RecentPipelines` (already
   finished-only, newest-finished first) so a pipeline you were watching keeps its
   outcome after it drops out of the tree — but only finished **root** pipelines
-  (children are excluded from the store), within the recent window. Pipelines/Jobs
-  remain the optimization-oriented stats tabs (their Running panels are slated to
-  be replaced by more stats).
+  (children are excluded from the store), within the recent window.
+- **The Pipelines tab is a 2×2 grid of historical-analysis panels** over the Top
+  window (labelled "last 30d"); it says nothing about what's running now (that's
+  the Current tab). All four aggregate by **project / tag / runner with the
+  ref dropped** — that's how this analysis is done by hand. **Fails most often**
+  (`fillFailsPanel`): projects by failure *rate*, with a `minFailRuns` floor so a
+  tiny sample can't top a panel meant for chronic failures. **Slowest**
+  (`fillSlowestPanel`): each project's wall-clock spread min/mean/p95/max, by mean
+  desc — the full spread, not just the mean, is what flags build-process work.
+  **Tag performance** and **Runner performance** (one shared `fillJobStatsPanel`):
+  job load — jobs / compute / mean queue-wait (`Job.Queued`, a saturation
+  signal) — grouped by the runner tags jobs were invoked with (`Job.Tags`), resp.
+  the runner that ran them. They're two keyings of one `jobStats` accumulator over
+  the same job population (only jobs a runner picked up), so the panes are
+  directly comparable; a multi-tagged job counts toward each of its tags (tag rows
+  overlap) and tagless jobs land in `(untagged)`. Tag performance replaced the
+  original compute-by-product panel (a product rollup wasn't useful here); the
+  `computeByProduct`/`ByProject` aggregates survive in the Snapshot for the
+  `refresh` text preview, where product shares can still exceed 100% under
+  overlapping products. All are pure aggregates in `aggregate.go` (`pipelineStats`
+  feeds *both* Fails and Slowest — one grouping, two sorts) over the same window
+  slices the other panels use, so the rework needed no store change. **"Compute" =
+  Σ job durations** (`Job.Duration`), the honest non-admin proxy for runner-time —
+  *not* pipeline wall-clock (which includes parallelism and idle gaps). It
+  includes child-pipeline jobs and is bounded by the `maxJobPages` job-fetch cap
+  on unusually busy projects. **Jobs** remains the older optimization-oriented
+  stats tab (Running / Recent / Top panels), slated for a similar rework.
 - **Job order within a pipeline** follows execution order, matching the GitLab UI:
   `sortPipelineJobs` orders by job **dependency** (`needs:`), not stage, because
   many pipelines drive execution with `needs` and dependencies override stages.
@@ -153,15 +180,17 @@ Keep it CGO-free so cross-compilation stays trivial.
   it keeps the view pinned to the *bottom*, hiding the newest rows (this was a real
   bug in the finished panel: it showed the oldest completions, not the newest). Any
   panel that populates after an empty render must call `ScrollToBeginning()` after
-  (re)filling — see `fillFinishedPipelines`. Watch for this when building the
-  overflowing stats panels.
+  (re)filling — see `fillFinishedPipelines` and every Pipelines-tab fill, which all
+  do this.
 - **Display conventions.** Merge-request pipeline refs
   (`refs/merge-requests/<n>/head|merge`) render as `MR <n>` via `displayRef` (used
   by both the Current tree label and the finished panel); branches/tags pass
   through. A numeric column right-aligns its **header** to match its right-aligned
   data (`setCurrentHeader` does this for TIME/DONE, `fillFinishedPipelines` for
-  DURATION/WHEN); the Pipelines/Jobs stats tabs still left-align their numeric
-  headers and show raw refs — apply both when those tabs are reworked.
+  DURATION/WHEN, and the Pipelines tab via `rightAlignHeaders` for every numeric
+  column); the Pipelines tab also drops the ref entirely. The Jobs stats tab still
+  left-aligns its numeric headers and shows raw refs — apply both when it's
+  reworked.
 - A TUI owns the screen, so logs go to `<instance dir>/glute.log`, never stdout.
 - **Diagnosing a hang:** `kill -USR1 <pid>` dumps every goroutine's stack to
   `glute.log` (`watchDumpSignal` in `app.go`; SIGUSR1 is Unix-only, no-op on

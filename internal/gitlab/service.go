@@ -136,6 +136,49 @@ func SampleSnapshot() Snapshot {
 		},
 	}
 
+	// Historical Pipelines-tab analytics: per-project pipeline stats (durations
+	// stay min ≤ mean ≤ p95 ≤ max), product/project compute rollups, and per-runner
+	// and per-tag load. Hand-authored (not derived) so the tab has realistic
+	// content under `--sample` without a window of history to aggregate.
+	pipeStats := []PipelineStats{
+		{ProjectPath: "acme/payments/api", Runs: 214, Succeeded: 198, Failed: 16, KnownDurations: 214,
+			DurMin: 3 * time.Minute, DurMean: 6*time.Minute + 12*time.Second, DurP95: 9 * time.Minute, DurMax: 12*time.Minute + 30*time.Second},
+		{ProjectPath: "acme/platform/gateway", Runs: 141, Succeeded: 120, Failed: 21, KnownDurations: 141,
+			DurMin: 4 * time.Minute, DurMean: 9*time.Minute + 3*time.Second, DurP95: 14 * time.Minute, DurMax: 22 * time.Minute},
+		{ProjectPath: "acme/payments/web", Runs: 88, Succeeded: 85, Failed: 3, KnownDurations: 88,
+			DurMin: 5 * time.Minute, DurMean: 7*time.Minute + 30*time.Second, DurP95: 11 * time.Minute, DurMax: 15 * time.Minute},
+	}
+
+	computeByProduct := []ComputeAgg{
+		{Key: "Payments", Runs: 6200, Compute: 212 * time.Hour, Pct: 71},
+		{Key: "Platform", Runs: 2100, Compute: 88 * time.Hour, Pct: 29},
+	}
+	computeByProject := []ComputeAgg{
+		{Key: "acme/payments/api", Runs: 3900, Compute: 138 * time.Hour, Pct: 46},
+		{Key: "acme/platform/gateway", Runs: 2100, Compute: 88 * time.Hour, Pct: 29},
+		{Key: "acme/payments/web", Runs: 2300, Compute: 74 * time.Hour, Pct: 25},
+	}
+
+	runnerStats := []JobStats{
+		{Key: "shared-linux-01", Jobs: 3400, Failed: 40, Compute: 120 * time.Hour,
+			MeanDuration: 2*time.Minute + 6*time.Second, MeanQueue: 4 * time.Second, P95Queue: 30 * time.Second},
+		{Key: "shared-linux-02", Jobs: 2600, Failed: 30, Compute: 95 * time.Hour,
+			MeanDuration: 2*time.Minute + 11*time.Second, MeanQueue: 6 * time.Second, P95Queue: 45 * time.Second},
+		{Key: "docker-builder", Jobs: 800, Failed: 12, Compute: 60 * time.Hour,
+			MeanDuration: 4*time.Minute + 30*time.Second, MeanQueue: 12 * time.Second, P95Queue: 90 * time.Second},
+	}
+
+	tagStats := []JobStats{
+		{Key: "linux", Jobs: 5200, Failed: 58, Compute: 185 * time.Hour,
+			MeanDuration: 2*time.Minute + 8*time.Second, MeanQueue: 5 * time.Second, P95Queue: 35 * time.Second},
+		{Key: "docker", Jobs: 1900, Failed: 21, Compute: 82 * time.Hour,
+			MeanDuration: 2*time.Minute + 35*time.Second, MeanQueue: 9 * time.Second, P95Queue: 60 * time.Second},
+		{Key: "windows", Jobs: 600, Failed: 9, Compute: 55 * time.Hour,
+			MeanDuration: 5*time.Minute + 30*time.Second, MeanQueue: 40 * time.Second, P95Queue: 4 * time.Minute},
+		{Key: "(untagged)", Jobs: 1100, Failed: 14, Compute: 33 * time.Hour,
+			MeanDuration: 1*time.Minute + 48*time.Second, MeanQueue: 3 * time.Second, P95Queue: 20 * time.Second},
+	}
+
 	return Snapshot{
 		Projects:         3,
 		Current:          current,
@@ -145,6 +188,11 @@ func SampleSnapshot() Snapshot {
 		RunningJobs:      runningJob,
 		RecentJobs:       recentJob,
 		TopJobs:          topJob,
+		PipelineStats:    pipeStats,
+		ComputeByProduct: computeByProduct,
+		ComputeByProject: computeByProject,
+		RunnerStats:      runnerStats,
+		TagStats:         tagStats,
 		UpdatedAt:        now,
 	}
 }
