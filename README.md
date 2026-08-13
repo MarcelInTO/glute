@@ -8,7 +8,7 @@ Read-only. Cross-platform (Linux, macOS, Windows).
 
 ## Commands
 
-- `glute` — launch the interactive dashboard (Pipelines / Jobs tabs)
+- `glute` — launch the interactive dashboard (Current / Work / Infrastructure tabs)
 - `glute --sample` — explore the dashboard with built-in fixture data
 - `glute auth` — connect to a GitLab instance (validates a `read_api` token)
 - `glute auth status` — verify the stored token
@@ -17,8 +17,8 @@ Read-only. Cross-platform (Linux, macOS, Windows).
 - `glute instances` — list configured instances
 - `glute version`
 
-Keys in the dashboard: `Tab`/`Shift-Tab` or `1`/`2` switch tabs, `r` refreshes,
-`?` shows help, `q` quits.
+Keys in the dashboard: `Tab`/`Shift-Tab` or `1`/`2`/`3` switch tabs, `↑`/`↓`
+scroll the Current tree, `r` refreshes, `?` shows help, `q` quits.
 
 ## Getting started
 

@@ -104,7 +104,14 @@ Keep it CGO-free so cross-compilation stays trivial.
 
 ## TUI notes
 
-- **Tabs: Current (default) · Pipelines · Jobs.** *Current* is the live-monitoring
+- **Tabs: Current (default) · Work · Infrastructure.** The split is by *question*,
+  not by GitLab noun: Current = "what's happening right now", Work = "which
+  projects' pipelines and jobs need attention" (history keyed by project),
+  Infrastructure = "how did the CI capacity behave" (history keyed by
+  tag/runner). The earlier Pipelines/Jobs tabs split by noun instead, which put
+  the two capacity panels on the pipeline tab and left job history stranded on a
+  tab whose headline panel (running jobs) duplicated the Current tree; that panel
+  was dropped in the regroup. *Current* is the live-monitoring
   view, split top-to-bottom into the **active-pipeline tree** (top ~2/3) and a
   **"recently finished pipelines"** panel (bottom ~1/3). The tree is a single
   indented, scrollable table — each active root pipeline, its jobs (grouped by
@@ -118,32 +125,42 @@ Keep it CGO-free so cross-compilation stays trivial.
   finished-only, newest-finished first) so a pipeline you were watching keeps its
   outcome after it drops out of the tree — but only finished **root** pipelines
   (children are excluded from the store), within the recent window.
-- **The Pipelines tab is a 2×2 grid of historical-analysis panels** over the Top
+- **The Work tab (`work.go`) is a 2×2 grid of history keyed by project** —
+  pipelines on the top row, the jobs inside them on the bottom — over the Top
   window (labelled "last 30d"); it says nothing about what's running now (that's
-  the Current tab). All four aggregate by **project / tag / runner with the
-  ref dropped** — that's how this analysis is done by hand. **Fails most often**
-  (`fillFailsPanel`): projects by failure *rate*, with a `minFailRuns` floor so a
-  tiny sample can't top a panel meant for chronic failures. **Slowest**
-  (`fillSlowestPanel`): each project's wall-clock spread min/mean/p95/max, by mean
-  desc — the full spread, not just the mean, is what flags build-process work.
-  **Tag performance** and **Runner performance** (one shared `fillJobStatsPanel`):
-  job load — jobs / compute / mean queue-wait (`Job.Queued`, a saturation
-  signal) — grouped by the runner tags jobs were invoked with (`Job.Tags`), resp.
-  the runner that ran them. They're two keyings of one `jobStats` accumulator over
-  the same job population (only jobs a runner picked up), so the panes are
-  directly comparable; a multi-tagged job counts toward each of its tags (tag rows
-  overlap) and tagless jobs land in `(untagged)`. Tag performance replaced the
-  original compute-by-product panel (a product rollup wasn't useful here); the
-  `computeByProduct`/`ByProject` aggregates survive in the Snapshot for the
-  `refresh` text preview, where product shares can still exceed 100% under
-  overlapping products. All are pure aggregates in `aggregate.go` (`pipelineStats`
-  feeds *both* Fails and Slowest — one grouping, two sorts) over the same window
-  slices the other panels use, so the rework needed no store change. **"Compute" =
-  Σ job durations** (`Job.Duration`), the honest non-admin proxy for runner-time —
-  *not* pipeline wall-clock (which includes parallelism and idle gaps). It
-  includes child-pipeline jobs and is bounded by the `maxJobPages` job-fetch cap
-  on unusually busy projects. **Jobs** remains the older optimization-oriented
-  stats tab (Running / Recent / Top panels), slated for a similar rework.
+  the Current tab). Everything **drops the ref**; that's how this analysis is done
+  by hand. **Fails most often** (`fillFailsPanel`): projects by failure *rate*,
+  with a `minFailRuns` floor so a tiny sample can't top a panel meant for chronic
+  failures. **Slowest** (`fillSlowestPanel`): each project's wall-clock spread
+  min/mean/p95/max, by mean desc — the full spread, not just the mean, is what
+  flags build-process work. Both come from one `pipelineStats` grouping, sorted
+  two ways. Below them the job-level counterparts moved over from the old Jobs
+  tab: **Recent jobs** (`fillRecentJobs`, the recent window — which job actually
+  failed, not just which project) and **Top jobs** (`fillTopJobs`, runs/avg/success
+  over the Top window). All four are project-keyed, so all four record hover paths.
+- **The Infrastructure tab (`infra.go`) is the capacity view**: **Tag
+  performance** and **Runner performance** side by side, full height (one shared
+  `fillJobStatsPanel`). Job load — jobs / compute / mean queue-wait (`Job.Queued`,
+  a saturation signal) — grouped by the runner tags jobs were invoked with
+  (`Job.Tags`), resp. the runner that ran them. They're two keyings of one
+  `jobStats` accumulator over the same job population (only jobs a runner picked
+  up), so the panes are directly comparable and are meant to be read against each
+  other — a tag whose queue wait dwarfs its runners' points at under-provided
+  capacity. That comparability is why they're columns, not stacked. A multi-tagged
+  job counts toward each of its tags (tag rows overlap) and tagless jobs land in
+  `(untagged)`. Neither panel is project-keyed, so this tab has no hover reveal.
+  `JobStats` also carries `Failed`, `MeanDuration` and `P95Queue`, which nothing
+  displays yet — the obvious next columns now that the panels are full-height.
+  Tag performance replaced an earlier compute-by-product panel (a product rollup
+  wasn't useful here); the `computeByProduct`/`ByProject` aggregates survive in the
+  Snapshot for the `refresh` text preview, where product shares can still exceed
+  100% under overlapping products. **"Compute" = Σ job durations**
+  (`Job.Duration`), the honest non-admin proxy for runner-time — *not* pipeline
+  wall-clock (which includes parallelism and idle gaps). It includes
+  child-pipeline jobs and is bounded by the `maxJobPages` job-fetch cap on
+  unusually busy projects. Every panel on both tabs is a pure aggregate in
+  `aggregate.go` over the same window slices, so the regroup needed no store
+  change — only the UI moved.
 - **Job order within a pipeline** follows execution order, matching the GitLab UI:
   `sortPipelineJobs` orders by job **dependency** (`needs:`), not stage, because
   many pipelines drive execution with `needs` and dependencies override stages.
@@ -180,17 +197,17 @@ Keep it CGO-free so cross-compilation stays trivial.
   it keeps the view pinned to the *bottom*, hiding the newest rows (this was a real
   bug in the finished panel: it showed the oldest completions, not the newest). Any
   panel that populates after an empty render must call `ScrollToBeginning()` after
-  (re)filling — see `fillFinishedPipelines` and every Pipelines-tab fill, which all
-  do this.
+  (re)filling — see `fillFinishedPipelines` and every Work/Infrastructure fill,
+  which all do this.
 - **Display conventions.** Merge-request pipeline refs
   (`refs/merge-requests/<n>/head|merge`) render as `MR <n>` via `displayRef` (used
   by both the Current tree label and the finished panel); branches/tags pass
   through. A numeric column right-aligns its **header** to match its right-aligned
   data (`setCurrentHeader` does this for TIME/DONE, `fillFinishedPipelines` for
-  DURATION/WHEN, and the Pipelines tab via `rightAlignHeaders` for every numeric
-  column); the Pipelines tab also drops the ref entirely. The Jobs stats tab still
-  left-aligns its numeric headers and shows raw refs — apply both when it's
-  reworked.
+  DURATION/WHEN, and the Work/Infrastructure tabs via the shared
+  `rightAlignHeaders` in `format.go` for every numeric column); neither stats tab
+  shows a ref at all. The moved job panels picked up both conventions — plus the
+  `ScrollToBeginning()` above, which they had been missing — in the regroup.
 - A TUI owns the screen, so logs go to `<instance dir>/glute.log`, never stdout.
 - **Diagnosing a hang:** `kill -USR1 <pid>` dumps every goroutine's stack to
   `glute.log` (`watchDumpSignal` in `app.go`; SIGUSR1 is Unix-only, no-op on

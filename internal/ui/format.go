@@ -66,6 +66,17 @@ func setHeader(t *tview.Table, cols ...string) {
 	}
 }
 
+// rightAlignHeaders right-justifies the given header columns, so a numeric
+// column's header lines up over its right-aligned cells (the display convention
+// the Current tab's setCurrentHeader and finished panel also follow).
+func rightAlignHeaders(t *tview.Table, cols ...int) {
+	for _, c := range cols {
+		if cell := t.GetCell(0, c); cell != nil {
+			cell.SetAlign(tview.AlignRight)
+		}
+	}
+}
+
 func textCell(text string) *tview.TableCell {
 	c := tview.NewTableCell(text)
 	c.SetExpansion(1)

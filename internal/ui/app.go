@@ -21,17 +21,17 @@ import (
 )
 
 const (
-	pageMain      = "main"
-	pageHelp      = "help"
-	pageCurrent   = "current"
-	pagePipelines = "pipelines"
-	pageJobs      = "jobs"
+	pageMain    = "main"
+	pageHelp    = "help"
+	pageCurrent = "current"
+	pageWork    = "work"
+	pageInfra   = "infra"
 )
 
 const helpText = `glute — keys
 
   Tab / Shift-Tab    switch tabs
-  1 / 2 / 3          Current / Pipelines / Jobs
+  1 / 2 / 3          Current / Work / Infrastructure
   ↑ / ↓              scroll the Current tree
   r                  refresh now
   ?                  toggle this help
@@ -56,9 +56,9 @@ type Dashboard struct {
 	footer *tview.TextView
 	help   *tview.Modal
 
-	current   *currentView
-	pipelines *pipelineView
-	jobs      *jobView
+	current *currentView
+	work    *workView
+	infra   *infraView
 
 	svc  gitlab.Service
 	opts Options
@@ -81,13 +81,13 @@ func NewDashboard(svc gitlab.Service, opts Options) *Dashboard {
 	}
 
 	current := newCurrentView(opts.RunnerAliases)
-	pipe := newPipelineView(opts.RunnerAliases)
-	jobs := newJobView()
+	work := newWorkView()
+	infra := newInfraView(opts.RunnerAliases)
 
 	pages := tview.NewPages()
 	pages.AddPage(pageCurrent, current.root, true, true)
-	pages.AddPage(pagePipelines, pipe.root, true, false)
-	pages.AddPage(pageJobs, jobs.root, true, false)
+	pages.AddPage(pageWork, work.root, true, false)
+	pages.AddPage(pageInfra, infra.root, true, false)
 
 	header := tview.NewTextView()
 	header.SetDynamicColors(true)
@@ -115,12 +115,12 @@ func NewDashboard(svc gitlab.Service, opts Options) *Dashboard {
 		footer:    footer,
 		help:      help,
 		current:   current,
-		pipelines: pipe,
-		jobs:      jobs,
+		work:      work,
+		infra:     infra,
 		svc:       svc,
 		opts:      opts,
-		tabs:      []string{pageCurrent, pagePipelines, pageJobs},
-		tabLabels: []string{"Current", "Pipelines", "Jobs"},
+		tabs:      []string{pageCurrent, pageWork, pageInfra},
+		tabLabels: []string{"Current", "Work", "Infrastructure"},
 		trigger:   make(chan struct{}, 1),
 	}
 
@@ -301,13 +301,12 @@ func (d *Dashboard) onMouse(event *tcell.EventMouse, action tview.MouseAction) (
 }
 
 func (d *Dashboard) hoverPathAt(x, y int) (string, bool) {
-	switch d.tabs[d.active] {
-	case pagePipelines:
-		return d.pipelines.hoverPathAt(x, y)
-	case pageJobs:
-		return d.jobs.hoverPathAt(x, y)
+	if d.tabs[d.active] == pageWork {
+		return d.work.hoverPathAt(x, y)
 	}
-	return "", false // the Current tab reveals paths via selection, not hover
+	// The Current tab reveals paths via selection, not hover; the Infrastructure
+	// tab's panels are keyed by tag/runner, so they have no path to reveal.
+	return "", false
 }
 
 func (d *Dashboard) triggerRefresh() {
@@ -356,8 +355,8 @@ func (d *Dashboard) doRefresh(ctx context.Context) {
 		if err == nil {
 			d.snapshot = snap
 			d.current.update(snap)
-			d.pipelines.update(snap)
-			d.jobs.update(snap)
+			d.work.update(snap)
+			d.infra.update(snap)
 		}
 		d.updateFooter()
 	})

@@ -45,8 +45,8 @@ func newSampleDashboard() *Dashboard {
 	d := NewDashboard(gitlab.FakeService{Snap: snap}, Options{Title: "sample data"})
 	d.snapshot = snap
 	d.current.update(snap)
-	d.pipelines.update(snap)
-	d.jobs.update(snap)
+	d.work.update(snap)
+	d.infra.update(snap)
 	d.updateHeader()
 	d.updateFooter()
 	return d
@@ -184,57 +184,93 @@ func TestCurrentTickReTimesOnlyLiveRows(t *testing.T) {
 	}
 }
 
-func TestDashboardRendersPipelinesTab(t *testing.T) {
+func TestDashboardRendersWorkTab(t *testing.T) {
 	d := newSampleDashboard()
 	d.selectTab(1)
 	out := renderToText(t, d, 130, 32)
-	t.Logf("Pipelines tab:\n%s", out)
+	t.Logf("Work tab:\n%s", out)
 
-	// The four historical-analysis panels, their columns, and a value from each:
-	// the fails/slowest project (gateway), a runner tag (windows, plus the
-	// untagged bucket), and a runner (docker-builder).
+	// The four panels — pipeline analysis on top, job history below — their
+	// columns, and a value from each: the fails/slowest project (gateway) and a
+	// job name from the recent/top job panels.
 	for _, want := range []string{
-		"glute", "Pipelines", "Jobs",
-		"Fails most often", "Slowest", "Tag performance", "Runner performance",
-		"RUNS", "MEAN", "P95", "COMPUTE", "QUEUE",
-		"gateway", "windows", "(untagged)", "docker-builder", "updated",
+		"glute", "Work", "Infrastructure",
+		"Fails most often", "Slowest", "Recent jobs", "Top jobs",
+		"RUNS", "MEAN", "P95", "DURATION", "SUCCESS",
+		"gateway", "deploy-staging", "updated",
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("pipelines render missing %q", want)
+			t.Errorf("work render missing %q", want)
 		}
 	}
 	// Project cells show only the last path segment, not the full path.
 	if strings.Contains(out, "acme/payments/api") {
 		t.Errorf("project column should be truncated to the last segment, found the full path")
 	}
+	// The capacity panels belong to the Infrastructure tab, not here.
+	for _, unwanted := range []string{"Tag performance", "Runner performance"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("work render should not show %q", unwanted)
+		}
+	}
 }
 
 func TestHoverRevealsFullPath(t *testing.T) {
 	d := newSampleDashboard()
-	d.selectTab(1)                  // Pipelines
+	d.selectTab(1)                  // Work
 	_ = renderToText(t, d, 130, 32) // draw once so GetInnerRect is populated
 
 	// The "fails most often" panel is project-keyed; its first row is the
 	// highest-fail-rate project (gateway, 21/141), so a hover there reveals the
 	// full path behind the truncated cell.
-	ix, iy, _, _ := d.pipelines.fails.table.GetInnerRect()
-	if path, ok := d.pipelines.hoverPathAt(ix+1, iy+1); !ok || path != "acme/platform/gateway" {
+	ix, iy, _, _ := d.work.fails.table.GetInnerRect()
+	if path, ok := d.work.hoverPathAt(ix+1, iy+1); !ok || path != "acme/platform/gateway" {
 		t.Fatalf("hover over first fails row = (%q, %v), want acme/platform/gateway", path, ok)
 	}
-	if _, ok := d.pipelines.hoverPathAt(ix+1, iy); ok {
+	if _, ok := d.work.hoverPathAt(ix+1, iy); ok {
 		t.Errorf("hover over the header row should reveal nothing")
 	}
 }
 
-func TestDashboardRendersJobsTab(t *testing.T) {
+func TestDashboardRendersInfraTab(t *testing.T) {
 	d := newSampleDashboard()
 	d.selectTab(2)
 	out := renderToText(t, d, 130, 32)
-	t.Logf("Jobs tab:\n%s", out)
+	t.Logf("Infrastructure tab:\n%s", out)
 
-	for _, want := range []string{"Running jobs", "integration-tests", "deploy-staging"} {
+	// Both capacity panels, their shared columns, and a value from each keying:
+	// a runner tag (windows, plus the untagged bucket) and a runner.
+	for _, want := range []string{
+		"Tag performance", "Runner performance",
+		"TAG", "RUNNER", "JOBS", "COMPUTE", "QUEUE",
+		"windows", "(untagged)", "docker-builder",
+	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("jobs render missing %q", want)
+			t.Errorf("infrastructure render missing %q", want)
 		}
+	}
+	// The running-jobs panel was dropped as redundant with the Current tab.
+	if strings.Contains(out, "Running jobs") {
+		t.Errorf("infrastructure render should not show a running-jobs panel")
+	}
+}
+
+// TestInfraTabAppliesRunnerAliases checks the runner panel honours the
+// configured short labels, like the Current tab's RUNNER column does.
+func TestInfraTabAppliesRunnerAliases(t *testing.T) {
+	snap := gitlab.SampleSnapshot()
+	d := NewDashboard(gitlab.FakeService{Snap: snap}, Options{
+		RunnerAliases: map[string]string{"docker-builder": "dkr"},
+	})
+	d.infra.update(snap)
+	d.selectTab(2)
+	out := renderToText(t, d, 130, 32)
+	t.Logf("Infrastructure tab (aliased):\n%s", out)
+
+	if !strings.Contains(out, "dkr") {
+		t.Errorf("aliased runner name %q not shown", "dkr")
+	}
+	if strings.Contains(out, "docker-builder") {
+		t.Errorf("aliased runner should not show its full name")
 	}
 }
