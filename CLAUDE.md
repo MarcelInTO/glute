@@ -52,6 +52,11 @@ Keep it CGO-free so cross-compilation stays trivial.
   summary and the per-refresh `refresh timing:` log line). Snapshots are still
   built by the pure aggregate functions over the whole store, so the UI is
   unchanged. `--sample`/`refresh` build a fresh Poller (cold path) each run.
+  Fetch phases fan out with bounded parallelism — `concurrency` in
+  `config.toml` (default 16, was a fixed 8): each phase's wall-clock is roughly
+  calls ÷ concurrency × latency, and the request *count* per refresh doesn't
+  change, so raising it is safe against per-minute rate limits. The per-project
+  pipeline sweep is the floor of every refresh (~1.4s for 81 projects at 8-way).
 
 ## GitLab API notes
 
@@ -69,7 +74,20 @@ Keep it CGO-free so cross-compilation stays trivial.
   clear a value already learned (`upsertPipe`).
 - **Jobs use two paths.** The full-window backfill (cold start + periodic
   resync) uses the REST project-wide jobs list (`ListJobs`): it's cheap (~1 page
-  per project) and — crucially — *includes child-pipeline jobs*. The warm delta
+  per project) and — crucially — *includes child-pipeline jobs*. It runs only
+  for projects that had **any pipeline in the window** (`bulkJobProjects`, decided
+  from the full-window pipeline list the same refresh just did, kept per project
+  as `projectPipelines`): a job created in the window belongs to a pipeline
+  updated in it, so a project with an empty pipeline list has no jobs to re-list
+  and skipping it loses nothing. On the real 81-project watchlist only 16 had a
+  pipeline in 30d, and this sweep was ~10s of the ~12s resync. The decision is
+  blind to pipeline `source` and made on the raw list (before children are
+  dropped), so a project alive only via a forgotten **scheduled** pipeline, a
+  trigger/API one, or a cross-project downstream child is still re-listed; a
+  project whose list call failed is kept, not skipped. Don't replace this with
+  `last_activity_at`: GitLab bumps that on repo/issue/MR events, never on
+  pipelines, so CI-only projects would fall through (measured: every active
+  project's newest pipeline post-dated its `last_activity_at`). The warm delta
   fetches jobs per pipeline via **GraphQL** (`FetchPipelineJobTree`) for only the
   active/changed pipelines, since a job's state changes only as part of its
   pipeline's — that's what keeps warm refreshes off the multi-second project-wide

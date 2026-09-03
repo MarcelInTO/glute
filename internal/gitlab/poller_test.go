@@ -1,6 +1,7 @@
 package gitlab
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -91,3 +92,46 @@ func TestJobRootsSelection(t *testing.T) {
 		t.Fatalf("want exactly 3 roots, got %d: %v", len(got), got)
 	}
 }
+
+// TestBulkJobProjectsSkipsOnlyPositivelyQuiet checks the full-window job
+// re-list skips exactly the projects whose pipeline list succeeded and came back
+// empty. A project alive only through a scheduled pipeline (a forgotten nightly
+// build), or only as a cross-project downstream child, or whose list call failed,
+// is still re-listed — the decision comes from GitLab's own pipeline list, not
+// from a proxy that CI-only activity wouldn't move.
+func TestBulkJobProjectsSkipsOnlyPositivelyQuiet(t *testing.T) {
+	results := []projectPipelines{
+		{project: Project{ID: 1, Path: "g/pushed"}, pipes: []Pipeline{{ID: 10, Source: "push"}}},
+		{project: Project{ID: 2, Path: "g/quiet"}}, // ok, empty → the only skip
+		{project: Project{ID: 3, Path: "g/nightly-only"}, pipes: []Pipeline{{ID: 30, Source: "schedule"}}},
+		{project: Project{ID: 4, Path: "g/child-only"}, pipes: []Pipeline{{ID: 40, Source: sourceParentPipeline}}},
+		{project: Project{ID: 5, Path: "g/forbidden"}, err: errForbidden},
+	}
+
+	got := bulkJobProjects(results)
+	var ids []int64
+	for _, p := range got {
+		ids = append(ids, p.ID)
+	}
+	want := []int64{1, 3, 4, 5}
+	if len(ids) != len(want) {
+		t.Fatalf("bulkJobProjects = %v, want %v", ids, want)
+	}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Fatalf("bulkJobProjects = %v, want %v (order preserved)", ids, want)
+		}
+	}
+
+	// The same results flatten to every pipeline (children included — those are
+	// dropped later, by dropChildPipelines) plus the one error.
+	pipes, errs := flattenPipelines(results)
+	if len(pipes) != 3 {
+		t.Errorf("flattenPipelines returned %d pipelines, want 3", len(pipes))
+	}
+	if len(errs) != 1 || errs[0] != errForbidden {
+		t.Errorf("flattenPipelines errors = %v, want [%v]", errs, errForbidden)
+	}
+}
+
+var errForbidden = errors.New("403 Forbidden")

@@ -56,6 +56,7 @@ gitlab_url       = "https://gitlab.example.com"
 refresh_interval = "10s"
 recent_window    = "24h0m0s"        # "recent failures & successes" lookback
 top_window       = "720h0m0s"       # history lookback (30d); `t` picks 1d/7d within it
+concurrency      = 16               # parallel GitLab API calls per refresh
 # ca_cert = "/path/to/corp-ca.pem"  # optional, for a self-managed CA
 
 [[product]]

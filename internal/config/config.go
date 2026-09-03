@@ -30,12 +30,18 @@ const envInstance = "GLUTE_INSTANCE"
 
 // Config is glute's on-disk configuration for a single instance.
 type Config struct {
-	GitLabURL       string    `toml:"gitlab_url"`
-	CACert          string    `toml:"ca_cert,omitempty"`
-	RefreshInterval Duration  `toml:"refresh_interval"`
-	RecentWindow    Duration  `toml:"recent_window"` // "recent failures & successes" lookback
-	TopWindow       Duration  `toml:"top_window"`    // "top … last month" lookback
-	Products        []Product `toml:"product,omitempty"`
+	GitLabURL       string   `toml:"gitlab_url"`
+	CACert          string   `toml:"ca_cert,omitempty"`
+	RefreshInterval Duration `toml:"refresh_interval"`
+	RecentWindow    Duration `toml:"recent_window"` // "recent failures & successes" lookback
+	TopWindow       Duration `toml:"top_window"`    // "top … last month" lookback
+	// Concurrency caps how many GitLab API calls run in parallel during a
+	// refresh (per-project lists, pipeline-detail fetches, job-tree walks). Each
+	// fetch phase's wall-clock is roughly calls ÷ concurrency × latency, so this
+	// is the direct lever on a large watchlist; the number of requests per
+	// refresh is unchanged, so per-minute rate limits are unaffected.
+	Concurrency int       `toml:"concurrency"`
+	Products    []Product `toml:"product,omitempty"`
 	// RunnerAliases maps a runner's full name (its GitLab description) to a
 	// shorter label for display; runners not listed show their real name. It's a
 	// display-only remap (the data layer keeps the true name), handy because
@@ -73,6 +79,7 @@ func defaultConfig() Config {
 		RefreshInterval: Duration(10 * time.Second),
 		RecentWindow:    Duration(24 * time.Hour),
 		TopWindow:       Duration(30 * 24 * time.Hour),
+		Concurrency:     16,
 	}
 }
 

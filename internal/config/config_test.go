@@ -164,3 +164,32 @@ func TestResolveInstance(t *testing.T) {
 		t.Errorf("invalid instance should error")
 	}
 }
+
+// TestConcurrencyDefaultsAndLoads checks a config file that predates the
+// concurrency key gets the default, and an explicit value is honoured.
+func TestConcurrencyDefaultsAndLoads(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("GLUTE_CONFIG_DIR", dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("gitlab_url = \"https://x\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(DefaultInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Concurrency != 16 {
+		t.Errorf("Concurrency default = %d, want 16", cfg.Concurrency)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("gitlab_url = \"https://x\"\nconcurrency = 4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(DefaultInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Concurrency != 4 {
+		t.Errorf("Concurrency = %d, want the configured 4", cfg.Concurrency)
+	}
+}

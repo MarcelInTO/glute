@@ -64,6 +64,7 @@ func runRefresh(cmd *cobra.Command, args []string) error {
 	poller := gitlab.NewPoller(client, productSpecs(cfg), gitlab.PollOptions{
 		RecentWindow: time.Duration(cfg.RecentWindow),
 		TopWindow:    time.Duration(cfg.TopWindow),
+		Concurrency:  cfg.Concurrency,
 	})
 
 	fmt.Fprintf(os.Stderr, "Fetching from %s ...\n", cfg.GitLabURL)

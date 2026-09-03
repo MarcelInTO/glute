@@ -44,7 +44,7 @@ func (o PollOptions) withDefaults() PollOptions {
 		o.TopLimit = 20
 	}
 	if o.Concurrency <= 0 {
-		o.Concurrency = 8
+		o.Concurrency = 16
 	}
 	if o.MaxDetailFetch <= 0 {
 		o.MaxDetailFetch = 1000
@@ -167,7 +167,8 @@ func (p *Poller) Refresh(ctx context.Context) (Snapshot, error) {
 	//    Child pipelines are dropped here: they're reached via their parent's
 	//    bridges (below), not aggregated as pipelines of their own.
 	fetchStart := time.Now()
-	changed, pipeErrs := p.fetchPipelines(ctx, projects, pipeSince)
+	pipeResults := p.fetchPipelines(ctx, projects, pipeSince)
+	changed, pipeErrs := flattenPipelines(pipeResults)
 	changed = dropChildPipelines(changed)
 	pipeDur := time.Since(fetchStart)
 	errs = append(errs, pipeErrs...)
@@ -188,19 +189,25 @@ func (p *Poller) Refresh(ctx context.Context) (Snapshot, error) {
 	}
 
 	// 6. Fetch jobs. A full-window pass uses the cheap project-wide bulk list
-	//    (which already includes child-pipeline jobs); a warm delta walks only
-	//    the active/changed pipeline trees — following bridges into child
-	//    pipelines — so live jobs stay fresh without re-listing history. A root
-	//    is marked done only once its whole subtree is terminal, so a child
-	//    outliving its parent is still polled.
+	//    (which already includes child-pipeline jobs) — but only for projects
+	//    that had any pipeline in the window; the full-window pipeline list we
+	//    just did tells us which (bulkJobProjects), and on a typical watchlist
+	//    most projects are idle, so this is where the resync's cost went. A warm
+	//    delta walks only the active/changed pipeline trees — following bridges
+	//    into child pipelines — so live jobs stay fresh without re-listing
+	//    history. A root is marked done only once its whole subtree is terminal,
+	//    so a child outliving its parent is still polled.
 	jobStart := time.Now()
 	var (
-		jobs     []Job
-		jobErrs  []error
-		jobRoots int
+		jobs        []Job
+		jobErrs     []error
+		jobRoots    int
+		jobProjects int
 	)
 	if fullResync {
-		jobs, jobErrs = p.fetchJobsBulk(ctx, projects, windowStart)
+		active := bulkJobProjects(pipeResults)
+		jobProjects = len(active)
+		jobs, jobErrs = p.fetchJobsBulk(ctx, active, windowStart)
 	} else {
 		rootPipes := p.jobRoots(changed)
 		jobRoots = len(rootPipes)
@@ -234,9 +241,9 @@ func (p *Poller) Refresh(ctx context.Context) (Snapshot, error) {
 	} else if fullResync {
 		mode = "resync"
 	}
-	log.Printf("refresh timing: resolve=%s pipes=%s jobs=%s enrich=%s (%s, changed=%d, jobRoots=%d, pending=%d, store: %d pipes / %d jobs)",
+	log.Printf("refresh timing: resolve=%s pipes=%s jobs=%s enrich=%s (%s, changed=%d, jobRoots=%d, jobProjects=%d/%d, pending=%d, store: %d pipes / %d jobs)",
 		resolveDur.Round(time.Millisecond), pipeDur.Round(time.Millisecond), jobDur.Round(time.Millisecond),
-		enrichDur.Round(time.Millisecond), mode, len(changed), jobRoots, len(p.pending), len(p.pipes), len(p.jobs))
+		enrichDur.Round(time.Millisecond), mode, len(changed), jobRoots, jobProjects, len(projects), len(p.pending), len(p.pipes), len(p.jobs))
 
 	// 8. Derive the panels from the whole retained store — the live/recent views
 	//    once, the history aggregates at every selectable window (the last one,
@@ -488,15 +495,22 @@ func (p *Poller) RefreshStats() RefreshStats {
 	return p.stats
 }
 
+// projectPipelines is one project's pipeline-list result: the pipelines in the
+// requested range — raw, child pipelines included — or the error that prevented
+// listing them. Results are kept per project rather than flattened so that a
+// full-window pass can tell which projects positively had no pipeline in the
+// window and skip their job re-list (see bulkJobProjects).
+type projectPipelines struct {
+	project Project
+	pipes   []Pipeline
+	err     error
+}
+
 // fetchPipelines fans out per-project pipeline-list calls with bounded
-// concurrency, returning the pipelines updated since `since` tagged with their
-// project path, plus any per-project errors.
-func (p *Poller) fetchPipelines(ctx context.Context, projects []Project, since time.Time) ([]Pipeline, []error) {
-	type result struct {
-		pipes []Pipeline
-		err   error
-	}
-	results := make([]result, len(projects))
+// concurrency, returning each project's pipelines updated since `since` (tagged
+// with the project path) or its error, in projects order.
+func (p *Poller) fetchPipelines(ctx context.Context, projects []Project, since time.Time) []projectPipelines {
+	results := make([]projectPipelines, len(projects))
 
 	sem := make(chan struct{}, p.opts.Concurrency)
 	var wg sync.WaitGroup
@@ -510,11 +524,16 @@ func (p *Poller) fetchPipelines(ctx context.Context, projects []Project, since t
 			for j := range pipes {
 				pipes[j].ProjectPath = projects[i].Path
 			}
-			results[i] = result{pipes: pipes, err: err}
+			results[i] = projectPipelines{project: projects[i], pipes: pipes, err: err}
 		}(i)
 	}
 	wg.Wait()
+	return results
+}
 
+// flattenPipelines merges per-project list results into one pipeline slice plus
+// the per-project errors, for the store merge.
+func flattenPipelines(results []projectPipelines) ([]Pipeline, []error) {
 	var all []Pipeline
 	var errs []error
 	for _, r := range results {
@@ -524,6 +543,31 @@ func (p *Poller) fetchPipelines(ctx context.Context, projects []Project, since t
 		all = append(all, r.pipes...)
 	}
 	return all, errs
+}
+
+// bulkJobProjects picks the projects a full-window pass must re-list jobs for:
+// every project except those positively known to have had no pipeline in the
+// window — a successful pipeline list that came back empty. Any job created in
+// the window belongs to a pipeline updated in the window, so such a project has
+// no jobs in the window either and skipping it loses nothing. results must come
+// from the full-window listing (since = window start), not a warm delta.
+//
+// The test is on the raw list, before child pipelines are dropped and blind to
+// source, so a project that's alive only through a forgotten scheduled pipeline
+// (or a trigger/API one, or only as a cross-project downstream child) is still
+// re-listed: it is GitLab's own pipeline list that decides, never a proxy like
+// last_activity_at, which CI-only activity doesn't move. A project whose list
+// call failed is kept — we can't tell — so a 403 or a blip degrades to the old
+// behaviour for that project rather than hiding its jobs.
+func bulkJobProjects(results []projectPipelines) []Project {
+	out := make([]Project, 0, len(results))
+	for _, r := range results {
+		if r.err == nil && len(r.pipes) == 0 {
+			continue
+		}
+		out = append(out, r.project)
+	}
+	return out
 }
 
 // treeNode is one pipeline to fetch while walking a root's parent→child tree,

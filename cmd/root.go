@@ -89,6 +89,7 @@ func runDashboard() error {
 		poller = gitlab.NewPoller(client, productSpecs(cfg), gitlab.PollOptions{
 			RecentWindow: time.Duration(cfg.RecentWindow),
 			TopWindow:    time.Duration(cfg.TopWindow),
+			Concurrency:  cfg.Concurrency,
 		})
 		svc = poller
 		title = instanceTitle(instance, cfg.GitLabURL)
