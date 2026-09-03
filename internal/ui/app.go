@@ -33,6 +33,7 @@ const helpText = `glute — keys
   Tab / Shift-Tab    switch tabs
   1 / 2 / 3          Current / Work / Infrastructure
   ↑ / ↓              scroll the Current tree
+  t                  cycle the history window (1d / 7d / 30d)
   r                  refresh now
   ?                  toggle this help
   q / Ctrl-C         quit`
@@ -72,6 +73,11 @@ type Dashboard struct {
 	lastErr    error
 	refreshing bool
 	hoverPath  string // full project path under the mouse, shown in the footer
+	// window is the selected history lookback the Work and Infrastructure
+	// panels aggregate over; zero (the default) means the full Top window. It's
+	// session state only — not persisted — and is resolved against the
+	// snapshot's Windows on every render (see cycleWindow).
+	window time.Duration
 }
 
 // NewDashboard builds (but does not start) the dashboard.
@@ -198,6 +204,9 @@ func (d *Dashboard) onKey(ev *tcell.EventKey) *tcell.EventKey {
 	case 'r':
 		d.triggerRefresh()
 		return nil
+	case 't':
+		d.cycleWindow()
+		return nil
 	case '?':
 		d.showHelp()
 		return nil
@@ -250,6 +259,37 @@ func (d *Dashboard) focusActive() {
 func (d *Dashboard) cycleTab(delta int) {
 	n := len(d.tabs)
 	d.selectTab(((d.active+delta)%n + n) % n)
+}
+
+// cycleWindow steps the history window to the next of the snapshot's selectable
+// lookbacks — ascending, wrapping from the full window (the default) back to the
+// shortest. It's a pure view switch: the snapshot already carries every window's
+// aggregates, so nothing is fetched or re-aggregated, and the change applies to
+// every windowed panel at once (Work and Infrastructure both). Before the first
+// snapshot lands there are no windows to cycle, so the key is a no-op.
+func (d *Dashboard) cycleWindow() {
+	ws := d.snapshot.Windows
+	if len(ws) == 0 {
+		return
+	}
+	i := len(ws) - 1 // an unmatched selection (incl. the zero default) counts as the full window
+	for k, w := range ws {
+		if w.Window == d.window {
+			i = k
+			break
+		}
+	}
+	d.window = ws[(i+1)%len(ws)].Window
+	d.renderHistory()
+	d.updateHeader()
+}
+
+// renderHistory (re)fills the windowed panels from the held snapshot at the
+// selected window. The Current tab isn't windowed, so it's not touched here.
+func (d *Dashboard) renderHistory() {
+	h := d.snapshot.WindowAt(d.window)
+	d.work.update(d.snapshot, h)
+	d.infra.update(h)
 }
 
 func (d *Dashboard) showHelp() {
@@ -355,8 +395,8 @@ func (d *Dashboard) doRefresh(ctx context.Context) {
 		if err == nil {
 			d.snapshot = snap
 			d.current.update(snap)
-			d.work.update(snap)
-			d.infra.update(snap)
+			d.renderHistory()
+			d.updateHeader() // the first snapshot names the windows the header shows
 		}
 		d.updateFooter()
 	})
@@ -379,11 +419,18 @@ func (d *Dashboard) updateHeader() {
 			fmt.Fprintf(&b, "[silver]%d %s[-]  ", i+1, label)
 		}
 	}
+	// The history window is global state (it applies to the Work and
+	// Infrastructure panels alike), so it sits up here beside the tabs rather
+	// than only in those tabs' panel titles — which also means the Current tab
+	// shows what `t` just did. Unknown until the first snapshot names the windows.
+	if h := d.snapshot.WindowAt(d.window); h.Window > 0 {
+		fmt.Fprintf(&b, "  [silver]window[-] last %s", format.Window(h.Window))
+	}
 	d.header.SetText(b.String())
 }
 
 func (d *Dashboard) updateFooter() {
-	const hints = "[silver]Tab switch · r refresh · ? help · q quit[-]"
+	const hints = "[silver]Tab switch · t window · r refresh · ? help · q quit[-]"
 
 	// While hovering a row, reveal that project's full path.
 	if d.hoverPath != "" {

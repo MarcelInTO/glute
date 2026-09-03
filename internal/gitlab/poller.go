@@ -238,24 +238,21 @@ func (p *Poller) Refresh(ctx context.Context) (Snapshot, error) {
 		resolveDur.Round(time.Millisecond), pipeDur.Round(time.Millisecond), jobDur.Round(time.Millisecond),
 		enrichDur.Round(time.Millisecond), mode, len(changed), jobRoots, len(p.pending), len(p.pipes), len(p.jobs))
 
-	// 8. Derive the panels from the whole retained store.
+	// 8. Derive the panels from the whole retained store — the live/recent views
+	//    once, the history aggregates at every selectable window (the last one,
+	//    the full Top window, doubles as the Snapshot's flat default).
 	pipeSlice := p.pipeSlice()
 	jobSlice := p.jobSlice()
-	projectProducts := projectProductMap(projects)
+	windows := historyWindows(now, p.opts.TopWindow, pipeSlice, jobSlice, projectProductMap(projects), p.opts.TopLimit)
 	return Snapshot{
 		Projects:         len(projects),
 		Current:          activePipelines(pipeSlice, jobSlice, p.childPipes, p.childParent),
 		RunningPipelines: runningPipelines(pipeSlice),
 		RecentPipelines:  recentPipelines(pipeSlice, recentSince),
-		TopPipelines:     topPipelines(pipeSlice, p.opts.TopLimit),
 		RunningJobs:      runningJobs(jobSlice),
 		RecentJobs:       recentJobs(jobSlice, recentSince),
-		TopJobs:          topJobs(jobSlice, p.opts.TopLimit),
-		PipelineStats:    pipelineStats(pipeSlice),
-		ComputeByProduct: computeByProduct(jobSlice, projectProducts),
-		ComputeByProject: computeByProject(jobSlice),
-		RunnerStats:      runnerStats(jobSlice),
-		TagStats:         tagStats(jobSlice),
+		WindowStats:      windows[len(windows)-1],
+		Windows:          windows,
 		UpdatedAt:        now,
 		Errors:           errs,
 	}, nil

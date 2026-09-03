@@ -16,8 +16,9 @@ import (
 const minFailRuns = 5
 
 // workView is the Work tab: a 2x2 grid of historical panels about the *work*
-// being run — pipelines on top, the jobs inside them below — over the Top window
-// (default 30d). Unlike the Current tab it says nothing about what's running now,
+// being run — pipelines on top, the jobs inside them below — over the selected
+// history window (the `t` key; the full Top window, default 30d, until changed).
+// Unlike the Current tab it says nothing about what's running now,
 // and unlike the Infrastructure tab it's keyed by project rather than by
 // capacity: the question here is "which projects' pipelines and jobs need
 // attention", not "which runners are saturated". Everything aggregates by
@@ -31,10 +32,12 @@ type workView struct {
 }
 
 func newWorkView() *workView {
-	fails := newPanelTable("Fails most often · last 30d")
-	slow := newPanelTable("Slowest · last 30d")
+	// The windowed panels get their "· last Nd" title suffix in update, once a
+	// snapshot says which window is showing.
+	fails := newPanelTable(titleFails)
+	slow := newPanelTable(titleSlowest)
 	recent := newPanelTable("Recent jobs · failures & successes")
-	top := newPanelTable("Top jobs · avg length · last 30d")
+	top := newPanelTable(titleTopJobs)
 
 	pipeRow := tview.NewFlex().SetDirection(tview.FlexColumn)
 	pipeRow.AddItem(fails.table, 0, 1, false)
@@ -51,11 +54,26 @@ func newWorkView() *workView {
 	return &workView{root: root, fails: fails, slow: slow, recent: recent, top: top}
 }
 
-func (v *workView) update(s gitlab.Snapshot) {
-	fillFailsPanel(v.fails, s.PipelineStats)
-	fillSlowestPanel(v.slow, s.PipelineStats)
+// Base titles of the windowed panels; update appends the window suffix.
+const (
+	titleFails   = "Fails most often"
+	titleSlowest = "Slowest"
+	titleTopJobs = "Top jobs · avg length"
+)
+
+// update fills the panels: the three history panels from h (the snapshot's
+// aggregates at the selected window), the recent-jobs panel from the snapshot's
+// recent window — it's a newest-first event list over the configured
+// recent_window, not a windowed aggregate, so the `t` key doesn't move it.
+func (v *workView) update(s gitlab.Snapshot, h gitlab.WindowStats) {
+	suffix := windowSuffix(h.Window)
+	v.fails.setTitle(titleFails + suffix)
+	v.slow.setTitle(titleSlowest + suffix)
+	v.top.setTitle(titleTopJobs + suffix)
+	fillFailsPanel(v.fails, h.PipelineStats)
+	fillSlowestPanel(v.slow, h.PipelineStats)
 	fillRecentJobs(v.recent, s.RecentJobs)
-	fillTopJobs(v.top, s.TopJobs)
+	fillTopJobs(v.top, h.TopJobs)
 }
 
 // hoverPathAt returns the full project path under (x, y). Every panel on this

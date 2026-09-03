@@ -534,6 +534,81 @@ func jobStats(jobs []Job, keysOf func(Job) []string) []JobStats {
 	return out
 }
 
+// windowSteps are the standard history lookbacks the TUI's window key cycles
+// through; selectableWindows caps them at the configured Top window, since the
+// store holds nothing older.
+var windowSteps = []time.Duration{24 * time.Hour, 7 * 24 * time.Hour, 30 * 24 * time.Hour}
+
+// selectableWindows returns the lookbacks a Snapshot carries history for: every
+// windowStep shorter than top, ascending, then top itself — so the full window
+// is always the last (and the default) choice. With the default 30d Top window
+// that's 1d / 7d / 30d; a 14d window yields 1d / 7d / 14d, and a window of a day
+// or less yields just itself.
+func selectableWindows(top time.Duration) []time.Duration {
+	var out []time.Duration
+	for _, w := range windowSteps {
+		if w < top {
+			out = append(out, w)
+		}
+	}
+	return append(out, top)
+}
+
+// windowSlices narrows the store to the entries within a lookback starting at
+// since, keyed on the same timestamps eviction uses (pipeline updated_at, job
+// created_at; a job with no created_at is kept, as evict keeps it). A shorter
+// window is thus exactly what the store would hold had it been configured that
+// wide, so its panels are consistent with the full window's.
+func windowSlices(pipes []Pipeline, jobs []Job, since time.Time) ([]Pipeline, []Job) {
+	ps := make([]Pipeline, 0, len(pipes))
+	for _, p := range pipes {
+		if !p.Updated.Before(since) {
+			ps = append(ps, p)
+		}
+	}
+	js := make([]Job, 0, len(jobs))
+	for _, j := range jobs {
+		if j.Created.IsZero() || !j.Created.Before(since) {
+			js = append(js, j)
+		}
+	}
+	return ps, js
+}
+
+// windowStats derives every history aggregate over one window's slices. It is
+// the single place the Work/Infrastructure panels and the preview's rollups are
+// computed from, so each selectable window gets the identical set.
+func windowStats(w time.Duration, pipes []Pipeline, jobs []Job, projectProducts map[string][]string, limit int) WindowStats {
+	return WindowStats{
+		Window:           w,
+		TopPipelines:     topPipelines(pipes, limit),
+		TopJobs:          topJobs(jobs, limit),
+		PipelineStats:    pipelineStats(pipes),
+		ComputeByProduct: computeByProduct(jobs, projectProducts),
+		ComputeByProject: computeByProject(jobs),
+		RunnerStats:      runnerStats(jobs),
+		TagStats:         tagStats(jobs),
+	}
+}
+
+// historyWindows computes windowStats at each selectable lookback up to top
+// (ascending; the last covers the whole store). pipes and jobs are the full
+// Top-window store, already evicted to top, so only the shorter windows filter.
+// Aggregation is milliseconds even on a busy 30d store, so computing every
+// window per refresh is what lets the window key be an instant view switch.
+func historyWindows(now time.Time, top time.Duration, pipes []Pipeline, jobs []Job, projectProducts map[string][]string, limit int) []WindowStats {
+	windows := selectableWindows(top)
+	out := make([]WindowStats, 0, len(windows))
+	for _, w := range windows {
+		ps, js := pipes, jobs
+		if w < top {
+			ps, js = windowSlices(pipes, jobs, now.Add(-w))
+		}
+		out = append(out, windowStats(w, ps, js, projectProducts, limit))
+	}
+	return out
+}
+
 // percentile returns the p-th percentile (p in [0,1]) of an ascending-sorted
 // duration slice by the nearest-rank method, or 0 for an empty slice. p95 of a
 // small sample is its max — deliberately, since the panels want the worst run a

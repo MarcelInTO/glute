@@ -14,6 +14,11 @@ func newPanelTable(title string) *panelTable {
 	return &panelTable{table: newTable(title)}
 }
 
+// setTitle replaces the panel's border title (padded like newTable does).
+func (p *panelTable) setTitle(title string) {
+	p.table.SetTitle(" " + title + " ")
+}
+
 // reset writes the bold header row and clears recorded paths.
 func (p *panelTable) reset(cols ...string) {
 	setHeader(p.table, cols...)

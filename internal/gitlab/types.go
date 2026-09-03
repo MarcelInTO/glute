@@ -214,6 +214,25 @@ func (a ActivePipeline) Progress() (done, total int) {
 	return done, total
 }
 
+// WindowStats is the history over one lookback window: the aggregates behind
+// the Work and Infrastructure tabs, plus the compute rollups the `refresh`
+// preview prints. Everything here drops the ref and is keyed by project, tag or
+// runner (the analysis is per project, not per ref). PipelineStats feeds both
+// the "fails most often" and "slowest" panels; TagStats/RunnerStats compare job
+// load (throughput, compute, queue wait) grouped by runner tag resp. runner; the
+// ComputeByProduct/Project rollups feed only the `refresh` text preview.
+type WindowStats struct {
+	Window time.Duration // the lookback these aggregates cover
+
+	TopPipelines     []PipelineAgg
+	TopJobs          []JobAgg
+	PipelineStats    []PipelineStats
+	ComputeByProduct []ComputeAgg
+	ComputeByProject []ComputeAgg
+	RunnerStats      []JobStats
+	TagStats         []JobStats
+}
+
 // Snapshot is an immutable, point-in-time view of the watched products' CI
 // state. One Refresh produces all panels from a single fetch pass, so the UI
 // renders whatever the latest Snapshot holds.
@@ -226,28 +245,34 @@ type Snapshot struct {
 
 	RunningPipelines []Pipeline
 	RecentPipelines  []Pipeline
-	TopPipelines     []PipelineAgg
 
 	RunningJobs []Job
 	RecentJobs  []Job
-	TopJobs     []JobAgg
 
-	// Historical Pipelines-tab analytics over the Top window, aggregated by
-	// project/tag/runner (ref is deliberately dropped — the analysis is
-	// per project, not per ref). PipelineStats feeds both the "fails most often"
-	// and "slowest" panels; TagStats/RunnerStats compare job load (throughput,
-	// compute, queue wait) grouped by runner tag resp. runner. The
-	// ComputeByProduct/Project rollups feed only the `refresh` text preview.
-	PipelineStats    []PipelineStats
-	ComputeByProduct []ComputeAgg
-	ComputeByProject []ComputeAgg
-	RunnerStats      []JobStats
-	TagStats         []JobStats
+	// The embedded WindowStats is the history over the full Top window — the
+	// default view, and what single-window readers (the `refresh` preview) use
+	// directly. Windows carries the same aggregates at every selectable lookback
+	// (see selectableWindows), ascending and ending with that same full window,
+	// so the TUI's window key switches views without a fetch or a re-aggregation.
+	WindowStats
+	Windows []WindowStats
 
 	UpdatedAt time.Time
 	// Errors holds non-fatal, per-project failures from the refresh; the
 	// Snapshot is still usable (partial data).
 	Errors []error
+}
+
+// WindowAt returns the history at lookback w, falling back to the full Top
+// window when w is zero (the default selection) or not one of the snapshot's
+// selectable windows.
+func (s Snapshot) WindowAt(w time.Duration) WindowStats {
+	for _, h := range s.Windows {
+		if h.Window == w {
+			return h
+		}
+	}
+	return s.WindowStats
 }
 
 // ProductSpec is the data-layer view of a configured product: a named set of

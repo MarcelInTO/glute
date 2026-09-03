@@ -37,7 +37,9 @@ Keep it CGO-free so cross-compilation stays trivial.
   single-instance setup keeps working as `default`.
 - **Data layer = one `Service.Refresh(ctx) → Snapshot`** that feeds every panel
   and the Current tree, so the UI never shows a half-loaded state. The UI depends
-  on the `Service` interface (fake + `SampleSnapshot` for tests).
+  on the `Service` interface (fake + `SampleSnapshot` for tests). The Snapshot
+  carries the history aggregates at *every* selectable window (`Windows`, see the
+  `t` key below), so a window change is a UI-only re-render, never a fetch.
 - **Incremental retained store (the `Poller`), not a full fetch per refresh.**
   The Poller keeps an in-memory store of the pipelines and jobs within the Top
   window and updates it incrementally: each refresh fetches only pipelines
@@ -126,9 +128,10 @@ Keep it CGO-free so cross-compilation stays trivial.
   outcome after it drops out of the tree — but only finished **root** pipelines
   (children are excluded from the store), within the recent window.
 - **The Work tab (`work.go`) is a 2×2 grid of history keyed by project** —
-  pipelines on the top row, the jobs inside them on the bottom — over the Top
-  window (labelled "last 30d"); it says nothing about what's running now (that's
-  the Current tab). Everything **drops the ref**; that's how this analysis is done
+  pipelines on the top row, the jobs inside them on the bottom — over the selected
+  history window (the `t` key; the full Top window until changed); it says nothing
+  about what's running now (that's the Current tab). Everything **drops the
+  ref**; that's how this analysis is done
   by hand. **Fails most often** (`fillFailsPanel`): projects by failure *rate*,
   with a `minFailRuns` floor so a tiny sample can't top a panel meant for chronic
   failures. **Slowest** (`fillSlowestPanel`): each project's wall-clock spread
@@ -161,6 +164,30 @@ Keep it CGO-free so cross-compilation stays trivial.
   unusually busy projects. Every panel on both tabs is a pure aggregate in
   `aggregate.go` over the same window slices, so the regroup needed no store
   change — only the UI moved.
+- **The `t` key cycles the history window** (1d → 7d → 30d → 1d…) for every
+  windowed panel at once — the Work tab's fails/slowest/top-jobs and both
+  Infrastructure panels — and is session-only (not persisted). It's a pure view
+  switch: `Refresh` computes `WindowStats` (the same aggregates, via one
+  `windowStats` helper) at each `selectableWindows(TopWindow)` lookback and the
+  Snapshot carries them all in `Windows`, so `cycleWindow` just re-fills the
+  panels from the held snapshot (`renderHistory`) — no fetch, no re-aggregation,
+  and the cold-start cost is milliseconds of extra aggregation per refresh. The
+  selectable set is the standard steps (`windowSteps`: 1d/7d/30d) that are
+  shorter than the configured `top_window`, plus the full window itself, so the
+  labels are always honest about how much history the store actually holds
+  (`top_window = 14d` yields 1d/7d/14d). The full window is the default and the
+  last step; it's also embedded flat in the Snapshot (`Snapshot.WindowStats`) so
+  single-window readers like the `refresh` preview needn't pick. Sub-windows
+  filter the store on the same timestamps eviction uses (`windowSlices`:
+  pipeline `updated_at`, job `created_at`), so a 7d view is exactly what a 7d
+  store would hold. Panel titles take their "· last Nd" suffix from the
+  displayed window (`windowSuffix`; bare until the first snapshot names the
+  windows) and the header shows `window last Nd` beside the tabs, so the change
+  is visible from the Current tab too. The **recent** panels (Current's finished
+  list, Work's recent jobs) are deliberately *not* windowed — they're
+  newest-first event lists over `recent_window`, not aggregates, so `t` leaves
+  them alone. Under `--sample` the shorter windows are scaled down from the full
+  fixture (`scaleWindowStats`) so the key visibly changes the numbers.
 - **Job order within a pipeline** follows execution order, matching the GitLab UI:
   `sortPipelineJobs` orders by job **dependency** (`needs:`), not stage, because
   many pipelines drive execution with `needs` and dependencies override stages.

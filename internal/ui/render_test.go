@@ -45,8 +45,7 @@ func newSampleDashboard() *Dashboard {
 	d := NewDashboard(gitlab.FakeService{Snap: snap}, Options{Title: "sample data"})
 	d.snapshot = snap
 	d.current.update(snap)
-	d.work.update(snap)
-	d.infra.update(snap)
+	d.renderHistory()
 	d.updateHeader()
 	d.updateFooter()
 	return d
@@ -262,7 +261,7 @@ func TestInfraTabAppliesRunnerAliases(t *testing.T) {
 	d := NewDashboard(gitlab.FakeService{Snap: snap}, Options{
 		RunnerAliases: map[string]string{"docker-builder": "dkr"},
 	})
-	d.infra.update(snap)
+	d.infra.update(snap.WindowStats)
 	d.selectTab(2)
 	out := renderToText(t, d, 130, 32)
 	t.Logf("Infrastructure tab (aliased):\n%s", out)

@@ -18,7 +18,9 @@ Read-only. Cross-platform (Linux, macOS, Windows).
 - `glute version`
 
 Keys in the dashboard: `Tab`/`Shift-Tab` or `1`/`2`/`3` switch tabs, `↑`/`↓`
-scroll the Current tree, `r` refreshes, `?` shows help, `q` quits.
+scroll the Current tree, `t` cycles the history window (1d / 7d / 30d) that
+every Work and Infrastructure panel aggregates over, `r` refreshes, `?` shows
+help, `q` quits.
 
 ## Getting started
 
@@ -53,7 +55,7 @@ stored separately (`token`, 0600) beside the config, or supplied via the
 gitlab_url       = "https://gitlab.example.com"
 refresh_interval = "10s"
 recent_window    = "24h0m0s"        # "recent failures & successes" lookback
-top_window       = "720h0m0s"       # "top … last month" lookback (30d)
+top_window       = "720h0m0s"       # history lookback (30d); `t` picks 1d/7d within it
 # ca_cert = "/path/to/corp-ca.pem"  # optional, for a self-managed CA
 
 [[product]]

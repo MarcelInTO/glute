@@ -9,8 +9,9 @@ import (
 )
 
 // infraView is the Infrastructure tab: how the CI *capacity* behaved over the
-// Top window (default 30d), as opposed to the Work tab's per-project view of the
-// work that ran on it. Its two panels are two keyings of the same job
+// selected history window (the `t` key; the full Top window, default 30d, until
+// changed), as opposed to the Work tab's per-project view of the work that ran
+// on it. Its two panels are two keyings of the same job
 // population — by the runner tags jobs asked for, and by the runner that
 // answered — so they sit side by side and are read against each other: a tag
 // whose queue wait dwarfs its runners' points at capacity that's under-provided.
@@ -22,8 +23,10 @@ type infraView struct {
 }
 
 func newInfraView(aliases map[string]string) *infraView {
-	tags := newPanelTable("Tag performance · last 30d")
-	runners := newPanelTable("Runner performance · last 30d")
+	// Both titles get their "· last Nd" suffix in update, once a snapshot says
+	// which window is showing.
+	tags := newPanelTable(titleTags)
+	runners := newPanelTable(titleRunners)
 
 	root := tview.NewFlex().SetDirection(tview.FlexColumn)
 	root.AddItem(tags.table, 0, 1, false)
@@ -32,9 +35,20 @@ func newInfraView(aliases map[string]string) *infraView {
 	return &infraView{root: root, tags: tags, runners: runners, aliases: aliases}
 }
 
-func (v *infraView) update(s gitlab.Snapshot) {
-	fillJobStatsPanel(v.tags, "TAG", s.TagStats, func(tag string) string { return tag })
-	fillJobStatsPanel(v.runners, "RUNNER", s.RunnerStats, v.displayRunner)
+// Base titles of the two panels; update appends the window suffix.
+const (
+	titleTags    = "Tag performance"
+	titleRunners = "Runner performance"
+)
+
+// update fills both panels from h, the snapshot's aggregates at the selected
+// history window.
+func (v *infraView) update(h gitlab.WindowStats) {
+	suffix := windowSuffix(h.Window)
+	v.tags.setTitle(titleTags + suffix)
+	v.runners.setTitle(titleRunners + suffix)
+	fillJobStatsPanel(v.tags, "TAG", h.TagStats, func(tag string) string { return tag })
+	fillJobStatsPanel(v.runners, "RUNNER", h.RunnerStats, v.displayRunner)
 }
 
 // displayRunner maps a runner's full name to its configured short label, or

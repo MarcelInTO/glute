@@ -2,7 +2,9 @@ package ui
 
 import (
 	"strings"
+	"time"
 
+	"github.com/MarcelInTO/glute/internal/format"
 	"github.com/MarcelInTO/glute/internal/gitlab"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -24,6 +26,16 @@ func displayRef(ref string) string {
 		return ref // not the numeric shape we expected; leave it as-is
 	}
 	return "MR " + iid
+}
+
+// windowSuffix is the " · last 7d" tail a history panel's title carries for the
+// window its rows cover, or empty when no window is known yet (the empty first
+// render, before the initial refresh names the snapshot's windows).
+func windowSuffix(w time.Duration) string {
+	if w <= 0 {
+		return ""
+	}
+	return " · last " + format.Window(w)
 }
 
 // statusColor maps a CI status to a cell color.

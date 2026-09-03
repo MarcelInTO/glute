@@ -179,20 +179,74 @@ func SampleSnapshot() Snapshot {
 			MeanDuration: 1*time.Minute + 48*time.Second, MeanQueue: 3 * time.Second, P95Queue: 20 * time.Second},
 	}
 
-	return Snapshot{
-		Projects:         3,
-		Current:          current,
-		RunningPipelines: running,
-		RecentPipelines:  recent,
+	full := WindowStats{
+		Window:           30 * 24 * time.Hour,
 		TopPipelines:     topPipe,
-		RunningJobs:      runningJob,
-		RecentJobs:       recentJob,
 		TopJobs:          topJob,
 		PipelineStats:    pipeStats,
 		ComputeByProduct: computeByProduct,
 		ComputeByProject: computeByProject,
 		RunnerStats:      runnerStats,
 		TagStats:         tagStats,
-		UpdatedAt:        now,
 	}
+
+	return Snapshot{
+		Projects:         3,
+		Current:          current,
+		RunningPipelines: running,
+		RecentPipelines:  recent,
+		RunningJobs:      runningJob,
+		RecentJobs:       recentJob,
+		WindowStats:      full,
+		// The shorter windows are scaled down from the full one so the window key
+		// visibly changes the history panels under --sample.
+		Windows: []WindowStats{
+			scaleWindowStats(full, 24*time.Hour),
+			scaleWindowStats(full, 7*24*time.Hour),
+			full,
+		},
+		UpdatedAt: now,
+	}
+}
+
+// scaleWindowStats derives sample history for a shorter window from the full
+// one by scaling every count and compute total by the windows' ratio (a
+// pipeline that ran 214 times in 30d ran ~50 in 7d), leaving the per-run
+// durations, queue waits and shares alone. Counts truncate rather than round so
+// the parts never exceed their whole (⌊a⌋+⌊b⌋ ≤ ⌊a+b⌋). Sample data only.
+func scaleWindowStats(full WindowStats, w time.Duration) WindowStats {
+	frac := float64(w) / float64(full.Window)
+	n := func(v int) int { return int(float64(v) * frac) }
+	d := func(v time.Duration) time.Duration { return time.Duration(float64(v) * frac) }
+
+	out := WindowStats{Window: w}
+	for _, a := range full.TopPipelines {
+		a.Count, a.Succeeded, a.Failed, a.KnownDurations = n(a.Count), n(a.Succeeded), n(a.Failed), n(a.KnownDurations)
+		out.TopPipelines = append(out.TopPipelines, a)
+	}
+	for _, a := range full.TopJobs {
+		a.Count, a.Succeeded, a.Failed, a.KnownDurations = n(a.Count), n(a.Succeeded), n(a.Failed), n(a.KnownDurations)
+		out.TopJobs = append(out.TopJobs, a)
+	}
+	for _, s := range full.PipelineStats {
+		s.Runs, s.Succeeded, s.Failed, s.Canceled, s.KnownDurations = n(s.Runs), n(s.Succeeded), n(s.Failed), n(s.Canceled), n(s.KnownDurations)
+		out.PipelineStats = append(out.PipelineStats, s)
+	}
+	for _, a := range full.ComputeByProduct {
+		a.Runs, a.Compute = n(a.Runs), d(a.Compute)
+		out.ComputeByProduct = append(out.ComputeByProduct, a)
+	}
+	for _, a := range full.ComputeByProject {
+		a.Runs, a.Compute = n(a.Runs), d(a.Compute)
+		out.ComputeByProject = append(out.ComputeByProject, a)
+	}
+	for _, s := range full.RunnerStats {
+		s.Jobs, s.Failed, s.Compute = n(s.Jobs), n(s.Failed), d(s.Compute)
+		out.RunnerStats = append(out.RunnerStats, s)
+	}
+	for _, s := range full.TagStats {
+		s.Jobs, s.Failed, s.Compute = n(s.Jobs), n(s.Failed), d(s.Compute)
+		out.TagStats = append(out.TagStats, s)
+	}
+	return out
 }

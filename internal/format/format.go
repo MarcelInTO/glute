@@ -115,3 +115,18 @@ func Base(p string) string {
 	}
 	return p
 }
+
+// Window renders a lookback window compactly: whole days as "7d", otherwise
+// whole hours as "36h", else the plain Duration string. Non-positive → em dash.
+func Window(d time.Duration) string {
+	switch {
+	case d <= 0:
+		return "—"
+	case d%(24*time.Hour) == 0:
+		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
+	case d%time.Hour == 0:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	default:
+		return d.String()
+	}
+}
