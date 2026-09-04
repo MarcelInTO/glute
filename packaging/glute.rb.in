@@ -1,0 +1,48 @@
+# Homebrew formula template for glute.
+#
+# `make formula` substitutes the @PLACEHOLDER@ tokens from dist/SHA256SUMS and
+# writes dist/glute.rb; the release workflow then commits that to Formula/glute.rb
+# in github.com/MarcelInTO/homebrew-tap. Keeping it as a reviewable template rather
+# than a heredoc inside CI means the formula can be generated and read locally
+# before a tag is ever spent on it.
+#
+# Windows is absent by design: Homebrew has no Windows support. Windows users take
+# the .zip from the release page.
+class Glute < Formula
+  desc "Terminal dashboard for GitLab CI/CD pipeline and job statistics"
+  homepage "https://github.com/MarcelInTO/glute"
+  version "@VERSION@"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "@BASE@/glute-@VERSION@-darwin-arm64.tar.gz"
+      sha256 "@SHA_DARWIN_ARM64@"
+    end
+    on_intel do
+      url "@BASE@/glute-@VERSION@-darwin-amd64.tar.gz"
+      sha256 "@SHA_DARWIN_AMD64@"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "@BASE@/glute-@VERSION@-linux-arm64.tar.gz"
+      sha256 "@SHA_LINUX_ARM64@"
+    end
+    on_intel do
+      url "@BASE@/glute-@VERSION@-linux-amd64.tar.gz"
+      sha256 "@SHA_LINUX_AMD64@"
+    end
+  end
+
+  def install
+    bin.install "glute"
+  end
+
+  # The binary stamps the tag (with its leading v); the formula version is the
+  # bare X.Y.Z Homebrew needs for comparison, hence the explicit "v" here.
+  test do
+    assert_match "glute v#{version}", shell_output("#{bin}/glute version")
+  end
+end

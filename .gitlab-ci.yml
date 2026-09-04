@@ -1,0 +1,135 @@
+# GitLab CI for glute. https://docs.gitlab.com/ee/ci/yaml/
+#
+# studio.wevr.com is the source of truth; github.com/MarcelInTO/glute is a push
+# mirror of it. That split decides what this pipeline does and does not do:
+#
+#   here    every push is proven (gofmt, vet, tests, a cross-compile of all five
+#           platforms), and a version tag gets its archives published to the
+#           project's generic package registry and a GitLab release pointing at them.
+#   mirror  the tag reaches GitHub, and .github/workflows/release.yml publishes the
+#           public GitHub release and the Homebrew tap.
+#
+# The Homebrew half lives on the mirror because this project is private: a formula
+# in a public tap has to download from a URL anyone can reach, and only the GitHub
+# release assets qualify. The GitLab release is what team members with access to
+# studio.wevr.com download from.
+#
+# All build logic lives in the Makefile, so a release can be rehearsed locally
+# (`make dist verify-dist formula VERSION=v1.2.3`) exactly as CI runs it.
+
+stages:
+  - test
+  - build
+  - release
+
+default:
+  image: golang:1.26
+
+variables:
+  # Keep the module cache inside the project dir so `cache:` below can carry it
+  # between jobs and pipelines.
+  GOPATH: $CI_PROJECT_DIR/.go
+  # Fail loudly if go.mod outgrows the image rather than silently downloading a
+  # different toolchain mid-build: the fix is to bump the `image:` above.
+  GOTOOLCHAIN: local
+  # Full history so `git describe` in the Makefile resolves a real version for
+  # non-tag builds instead of a bare sha. The repo is small; this is cheap.
+  GIT_DEPTH: "0"
+
+cache:
+  key: go-mod
+  paths:
+    - .go/pkg/mod
+
+# Without this a push to a branch with an open MR builds twice (once as a branch
+# pipeline, once as an MR pipeline).
+workflow:
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+# Runs untagged, so any shared docker runner picks it up.
+test:
+  stage: test
+  script:
+    - make check
+    - make smoke
+
+# Only vX.Y.Z tags are release tags. Anything else (a docs snapshot, a scratch tag)
+# still gets the test job above but is not built or published — the generic package
+# registry rejects non-semver versions, so a tag that cannot be a version cannot be
+# a release either.
+.release_tag_rules: &release_tag_rules
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+/
+
+build:
+  stage: build
+  <<: *release_tag_rules
+  needs: [test]
+  before_script:
+    # The Windows archive is a .zip and the golang image is Debian-based, which may
+    # not carry zip. Provisioning the environment is CI's job; the packaging itself
+    # stays in the Makefile.
+    - command -v zip >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq zip; }
+  script:
+    # verify-dist unpacks the archive this runner can execute and asserts the binary
+    # inside it reports the tag being released — the one packaging bug a green test
+    # suite cannot catch.
+    - make dist VERSION="$CI_COMMIT_TAG"
+    - make verify-dist VERSION="$CI_COMMIT_TAG"
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 month
+
+# Uploads the archives to the project's generic package registry, then creates the
+# release whose asset links point at them. GitLab releases cannot host uploaded files
+# directly — they link to URLs — so the registry is where the bytes actually live.
+#
+# Done with curl and CI_JOB_TOKEN rather than the `release:` keyword on purpose: the
+# keyword pulls registry.gitlab.com/gitlab-org/release-cli, an extra image this
+# self-managed instance would have to be able to reach, and the API underneath accepts
+# the same job token anyway.
+release:
+  stage: release
+  <<: *release_tag_rules
+  needs: [build]
+  script:
+    - |
+      set -eu
+      # Generic package versions must be semver, which excludes the tag's leading v.
+      PKG_VERSION="${CI_COMMIT_TAG#v}"
+      PKG_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/glute/${PKG_VERSION}"
+
+      links=""
+      for f in dist/glute-* dist/SHA256SUMS; do
+        name=$(basename "$f")
+        echo "uploading $name"
+        curl --fail-with-body -sS --retry 3 \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --upload-file "$f" "${PKG_URL}/${name}" > /dev/null
+        if [ -n "$links" ]; then links="${links},"; fi
+        links="${links}{\"name\":\"${name}\",\"url\":\"${PKG_URL}/${name}\",\"link_type\":\"package\"}"
+      done
+
+      # Unquoted heredoc so the variables expand; the \n sequences are left alone by
+      # the shell and land in the JSON string as real newlines.
+      cat > release.json <<JSON
+      {
+        "name": "glute ${PKG_VERSION}",
+        "tag_name": "${CI_COMMIT_TAG}",
+        "description": "Built from ${CI_COMMIT_SHORT_SHA}.\n\nDownload the archive for your platform, unpack it, and put \`glute\` on your PATH. Verify a download against \`SHA256SUMS\`.\n\nOn macOS and Linux, \`brew install marcelinto/tap/glute\` installs the same build from the public mirror.",
+        "assets": { "links": [ ${links} ] }
+      }
+      JSON
+
+      curl --fail-with-body -sS -X POST \
+        --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --header "Content-Type: application/json" \
+        --data @release.json \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases" > /dev/null
+      echo "released ${CI_COMMIT_TAG}"

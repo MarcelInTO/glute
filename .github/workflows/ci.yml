@@ -1,0 +1,57 @@
+# The GitHub Actions twin of .gitlab-ci.yml. This repo is a push mirror of
+# studio.wevr.com (the source of truth), so this triggers only on main and tags —
+# GitLab CI already covers topic branches upstream.
+#
+# It earns its place by testing on macOS and Windows, which the upstream pipeline
+# does not: glute has a real platform split (the dumpsignal_unix / dumpsignal_windows
+# build tags) that only a native run exercises.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check & cross-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The same gate GitLab runs, through the same Makefile targets, so the two
+      # pipelines cannot drift apart in what they consider passing.
+      - run: make check
+      - run: make smoke
+      # Proves all five release platforms still cross-compile on every push to main,
+      # not only when a tag is cut and it is too late to be cheap.
+      - run: make
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # `go` directly rather than `make`: the Windows runner has no dependable GNU
+      # make, and running natively is this job's entire reason to exist.
+      - run: go build ./...
+      - run: go test ./...

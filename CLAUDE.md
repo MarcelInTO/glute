@@ -5,10 +5,14 @@ and job stats across a configured watchlist of "products". Go, cross-platform.
 
 ## Build & test
 
-- `make` — cross-compile Linux/macOS/Windows binaries into `bin/` (gitignored)
+- `make` — cross-compile all five release platforms into `bin/` (gitignored)
 - `make build` — host-only build to `bin/glute`
 - `make run ARGS="--sample"` — build and run
+- `make check` — the CI gate: `fmt-check`, `vet`, `test`
 - `make test` / `go test ./...`
+- `make smoke` — build, then `glute version` + `glute refresh --sample`
+- `make dist VERSION=v1.2.3` — release archives + `SHA256SUMS` into `dist/`
+- `make verify-dist` / `make formula` — see the release section at the end
 
 Stack: Go 1.26, cobra (CLI), rivo/tview + gdamore/tcell (TUI),
 pelletier/go-toml/v2 (config), `gitlab.com/gitlab-org/api/client-go` (the
@@ -262,3 +266,63 @@ Keep it CGO-free so cross-compilation stays trivial.
   grab a dump *before* killing it — a wedged TUI is unresponsive to keys and
   Ctrl-C because the event loop itself is stuck.
 - Muted text uses `silver` (not `gray`) so it stays legible on dark terminals.
+
+## CI & releases
+
+- **Two pipelines, one Makefile.** `studio.wevr.com` is the source of truth and
+  `github.com/MarcelInTO/glute` is a push mirror of it. The split exists for one
+  reason: the GitLab project is **private**, and a formula in a public Homebrew
+  tap has to download from a URL anyone can reach. So GitLab builds the archives,
+  uploads them to its own generic package registry and creates the GitLab release
+  (what people with `studio.wevr.com` access download); the mirror's
+  `release.yml` publishes the public GitHub release and pushes
+  `Formula/glute.rb` to `MarcelInTO/homebrew-tap`. Both sides invoke the *same*
+  `make` targets, so they cannot drift in how a binary is produced — and
+  `make dist verify-dist formula VERSION=v1.2.3` is that same rehearsal on a
+  laptop. Nothing about the release lives only in a CI file.
+- **The mirror's token needs the `workflow` scope.** The push mirror carries
+  `.github/workflows/` along with everything else, and GitHub refuses a PAT-authed
+  push that creates or updates a workflow file unless the token has `workflow`
+  scope (classic) / Workflows: write (fine-grained) on top of repo write. The
+  failure surfaces as a mirror error about "refusing to allow a Personal Access
+  Token to create or update workflow", which does not obviously name the scope.
+- **Only `vX.Y.Z` tags publish.** Any other tag still runs the tests but builds
+  nothing: GitLab's generic package registry requires a semver version, so a tag
+  that cannot be a version cannot be a release. Prereleases (`v1.2.3-rc.1`) are
+  released on both sides but kept **out of the tap** — Homebrew compares versions
+  numerically, and a tap tracking a release candidate would push it to everyone
+  running `brew upgrade`.
+- **Two spellings of the version.** The tag and the binary keep the leading `v`
+  (`git describe` produces it, so a dev build and a release build agree and
+  `glute version` prints `glute v1.2.3`); archive names and the formula take the
+  bare `1.2.3`, because a leading `v` breaks Homebrew's upgrade ordering. Hence
+  `VERSION` vs `DIST_VERSION` in the Makefile, and the explicit `"glute v#{version}"`
+  in the formula's `test do` block.
+- **`verify-dist` unpacks the archive and asserts the binary inside reports the
+  tag.** It runs against the exact bytes that ship, not `go run` — a
+  version/packaging mismatch is the one release bug a green test suite cannot
+  catch. Both pipelines run it right after `make dist`.
+- **The formula is a template** (`packaging/glute.rb.in`) substituted from
+  `dist/SHA256SUMS`, not a heredoc inside a workflow, so it is reviewable in the
+  repo and generatable locally before a tag is spent. `make formula` strips the
+  template's own header comment and emits a provenance one — a guard fails the
+  build on any unsubstituted `@TOKEN@`, which is what catches a platform silently
+  dropped from `PLATFORMS`. The four non-Windows rows of `PLATFORMS` are exactly
+  the formula's `on_macos`/`on_linux` × `on_arm`/`on_intel` matrix; Windows is
+  absent from the formula because Homebrew has no Windows support.
+- **The GitLab release is created with `curl` + `CI_JOB_TOKEN`, not the `release:`
+  keyword.** The keyword pulls `registry.gitlab.com/gitlab-org/release-cli`, an
+  extra image a self-managed instance has to be able to reach; the API underneath
+  takes the same job token. GitLab releases cannot host uploaded files — they link
+  to URLs — which is why the archives go to the generic package registry first.
+- **The GitHub `ci.yml` is not redundant with GitLab's.** It earns its place by
+  running the tests natively on **macOS and Windows**, which the GitLab pipeline
+  (Linux docker runners) does not — glute has a real platform split in the
+  `dumpsignal_*` build tags. It uses `go` directly rather than `make` on that
+  matrix because the Windows runner has no dependable GNU make.
+- **Runner tags on `studio.wevr.com`**: instance docker runners take untagged jobs
+  (what this pipeline uses — verified against `wevr-public/cli-tester`, whose
+  untagged `test:linux` lands on the "Braque/Bazille - Linux Docker" runners and
+  pulls an external image); native runners exist behind the tags `macos` and
+  `wevrCodeBuildWin` if a job ever needs them. Go cross-compiles CGO-free, so one
+  Linux runner produces every platform and no build matrix is needed.

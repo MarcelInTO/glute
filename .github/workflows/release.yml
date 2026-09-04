@@ -1,0 +1,191 @@
+# Publishes the public half of a glute release: the GitHub Release that the Homebrew
+# formula downloads from, and the formula itself in MarcelInTO/homebrew-tap.
+#
+# The tag arrives here from studio.wevr.com through the push mirror. GitLab CI has
+# already built the same commit and published the internal GitLab release from its own
+# package registry; this side exists because that project is private, and a formula in
+# a public tap has to point at a URL anyone can reach.
+#
+# Both sides build from the same Makefile targets, so the archives are produced the
+# same way in both places — and `make dist verify-dist formula VERSION=v1.2.3` is the
+# same rehearsal on a laptop.
+#
+# Trigger: pushing a tag `vX.Y.Z` (or `vX.Y.Z-rc.1`). `workflow_dispatch` builds the
+# same archives, uploads them as workflow artifacts and prints the formula to the step
+# summary, but creates no Release and touches no tap — a dry run of the packaging, so a
+# mistake costs a re-run rather than a burnt version number.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to package, with the leading v (e.g. v0.2.0-rc.1). Dry run: nothing is published.'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: publish release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # create the Release and upload its assets
+      id-token: write      # sign the build provenance attestation
+      attestations: write  # record it against this repository
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The tag is the single source of truth for the version, so a shipped binary can
+      # never disagree with the release it was downloaded from. Read through an env var
+      # rather than interpolated into the script body: `inputs.version` is
+      # attacker-shaped input on a dispatch, and `${{ }}` inside `run:` is a
+      # shell-injection sink.
+      - name: Resolve version from tag
+        id: version
+        env:
+          RAW: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+        run: |
+          tag="$RAW"
+          echo "$tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$' || {
+            echo "::error::'$tag' is not a vX.Y.Z or vX.Y.Z-prerelease tag"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          # A prerelease is marked as one on the Release and is kept out of the tap:
+          # Homebrew versions are numeric, and a tap tracking `0.3.0-rc.1` would push a
+          # release candidate to everyone running `brew upgrade`.
+          case "$tag" in
+            *-*) echo "prerelease=true"  >> "$GITHUB_OUTPUT" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+          echo "glute $tag" >> "$GITHUB_STEP_SUMMARY"
+
+      # verify-dist unpacks the archive this runner can execute and asserts the binary
+      # inside it reports the tag being released — the one packaging bug a green test
+      # suite cannot catch. It runs against the exact bytes that ship, not `go run`.
+      - name: Build and verify release archives
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          make dist VERSION="$TAG"
+          make verify-dist VERSION="$TAG"
+
+      # Lets `gh attestation verify` prove an archive came from this workflow on this
+      # commit — the only provenance an unsigned binary can offer.
+      - name: Attest build provenance
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/glute-*'
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          notes=$(mktemp)
+          cat > "$notes" <<'EOF'
+          Download the archive for your platform, unpack it, and put `glute` on your `PATH`.
+
+          | Platform | Asset |
+          | --- | --- |
+          | macOS (Apple Silicon) | `darwin-arm64.tar.gz` |
+          | macOS (Intel) | `darwin-amd64.tar.gz` |
+          | Linux (x86-64) | `linux-amd64.tar.gz` |
+          | Linux (ARM64) | `linux-arm64.tar.gz` |
+          | Windows (x86-64) | `windows-amd64.zip` |
+
+          On macOS and Linux, Homebrew is the easier path — it puts `glute` on your
+          `PATH`, handles upgrades, and never sets the quarantine flag a browser
+          download would:
+
+          ```sh
+          brew install marcelinto/tap/glute
+          ```
+
+          The binaries are unsigned. macOS quarantines anything downloaded through a
+          browser, so if Gatekeeper refuses to launch it, either download with `curl`
+          instead or clear the flag: `xattr -d com.apple.quarantine /usr/local/bin/glute`.
+          Windows SmartScreen will warn for the same reason.
+
+          Verify a download against `SHA256SUMS`, or check its provenance with
+          `gh attestation verify <archive> --repo MarcelInTO/glute`.
+          EOF
+          flags=""
+          if [ "$PRERELEASE" = "true" ]; then flags="--prerelease"; fi
+          gh release create "$TAG" \
+            --title "glute $VERSION" \
+            --notes-file "$notes" \
+            $flags \
+            dist/glute-* dist/SHA256SUMS
+
+      # Written from the checksums `make dist` computed, so the formula can never
+      # disagree with the assets it points at. Always generated, including on a dry run,
+      # so it can be read in the step summary before a tag is spent; only the push to
+      # the tap below is gated.
+      - name: Generate Homebrew formula
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          make formula VERSION="$TAG"
+          {
+            echo '### Homebrew formula'
+            echo 'Commit this to `Formula/glute.rb` in the tap if it was not pushed automatically.'
+            echo '```ruby'
+            cat dist/glute.rb
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload archives (dry run)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: glute-${{ steps.version.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+
+      # Opt-in: does nothing until a HOMEBREW_TAP_TOKEN secret with write access to the
+      # tap repository exists. Without it the formula is still in the step summary above,
+      # ready to paste. github.token cannot be used here — it is scoped to this
+      # repository only, and the tap is a different one.
+      - name: Push formula to the tap
+        if: github.event_name == 'push' && steps.version.outputs.prerelease == 'false'
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAP_REPO: ${{ github.repository_owner }}/homebrew-tap
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN not set — skipping the tap update; the formula is in the step summary."
+            exit 0
+          fi
+          git clone --depth 1 "https://x-access-token:$TAP_TOKEN@github.com/$TAP_REPO.git" tap
+          cd tap
+          branch=$(GH_TOKEN="$TAP_TOKEN" gh api "repos/$TAP_REPO" --jq .default_branch 2>/dev/null || true)
+          branch=${branch:-main}
+          git checkout -B "$branch"
+          mkdir -p Formula
+          cp ../dist/glute.rb Formula/glute.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/glute.rb
+          if git diff --cached --quiet; then echo "formula already current"; exit 0; fi
+          git commit -m "glute $VERSION"
+          git push origin "HEAD:refs/heads/$branch"

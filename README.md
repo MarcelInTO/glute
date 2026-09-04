@@ -22,10 +22,29 @@ scroll the Current tree, `t` cycles the history window (1d / 7d / 30d) that
 every Work and Infrastructure panel aggregates over, `r` refreshes, `?` shows
 help, `q` quits.
 
-## Getting started
+## Install
+
+On macOS and Linux:
+
+```sh
+brew install marcelinto/tap/glute
+```
+
+Otherwise grab the archive for your platform from the
+[latest release](https://github.com/MarcelInTO/glute/releases/latest), unpack it,
+and put `glute` on your `PATH`. The binaries are unsigned, so a browser download
+on macOS is quarantined by Gatekeeper — install with Homebrew or `curl`, or clear
+the flag with `xattr -d com.apple.quarantine`.
+
+To build from source instead (Go 1.26, no CGO):
 
 ```sh
 make            # cross-compile binaries into bin/
+```
+
+## Getting started
+
+```sh
 glute auth      # enter your instance URL + a read_api token
 glute           # launch the dashboard
 ```
@@ -63,4 +82,41 @@ concurrency      = 16               # parallel GitLab API calls per refresh
 name     = "Payments"
 groups   = ["org/payments"]
 projects = ["org/legacy-gateway"]
+```
+
+## Releasing
+
+Releases are cut from a `vX.Y.Z` tag. The GitLab project on `studio.wevr.com` is
+the source of truth; `github.com/MarcelInTO/glute` is a push mirror of it, and the
+work is split because the GitLab project is private while a public Homebrew tap
+needs a URL anyone can reach:
+
+| Where | On a `vX.Y.Z` tag |
+| --- | --- |
+| GitLab (`.gitlab-ci.yml`) | builds the five archives, uploads them to the project's generic package registry, and creates the GitLab release pointing at them |
+| GitHub (`.github/workflows/release.yml`) | builds the same archives, creates the public GitHub release with build provenance, and pushes `Formula/glute.rb` to `MarcelInTO/homebrew-tap` |
+
+A prerelease tag (`v1.2.3-rc.1`) is released on both sides but deliberately kept
+out of the tap — Homebrew versions are numeric, and a tap tracking a release
+candidate would push it to everyone running `brew upgrade`. Tags that are not
+`vX.Y.Z` still run the tests but publish nothing.
+
+Rehearse the whole thing locally before spending a tag — this is exactly what
+both pipelines run:
+
+```sh
+make check                          # gofmt, vet, tests
+make dist        VERSION=v1.2.3     # archives + SHA256SUMS in dist/
+make verify-dist VERSION=v1.2.3     # unpack and assert the binary reports v1.2.3
+make formula     VERSION=v1.2.3     # dist/glute.rb from those checksums
+```
+
+`.github/workflows/release.yml` also has a `workflow_dispatch` dry run: it builds
+the archives and prints the formula to the step summary without creating a release
+or touching the tap.
+
+Then:
+
+```sh
+git tag -a v1.2.3 -m "glute 1.2.3" && git push origin v1.2.3
 ```

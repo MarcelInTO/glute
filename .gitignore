@@ -3,7 +3,7 @@
 /glute.exe
 /bin/
 
-# GoReleaser output
+# Release archives staged by `make dist`
 /dist/
 
 # Local logs
