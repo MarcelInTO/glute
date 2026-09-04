@@ -290,6 +290,12 @@ Keep it CGO-free so cross-compilation stays trivial.
   token-permission problem and is not one. Leave "mirror only protected branches"
   off, or tags never reach GitHub and no release is ever built. SSH + a write-enabled
   GitHub deploy key is the alternative if the password path ever regresses.
+- **The mirror throttles to once per 5 minutes, tags included.** So a tag produces
+  the GitLab release within ~2 minutes but the GitHub release (and therefore
+  `brew upgrade`) roughly 5 minutes later — measured on v0.0.1: tag pushed, tag
+  visible on GitHub 5 min later, release workflow done 29s after that. The gap is
+  the mirror's cadence, not a failure; don't go hunting for a broken workflow
+  during it.
 - **The mirror's token needs the `workflow` scope.** The push mirror carries
   `.github/workflows/` along with everything else, and GitHub refuses a PAT-authed
   push that creates or updates a workflow file unless the token has `workflow`
