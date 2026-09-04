@@ -280,6 +280,16 @@ Keep it CGO-free so cross-compilation stays trivial.
   `make` targets, so they cannot drift in how a binary is produced — and
   `make dist verify-dist formula VERSION=v1.2.3` is that same rehearsal on a
   laptop. Nothing about the release lives only in a CI file.
+- **Setting the push mirror up (GitLab → Settings → Repository → Mirroring
+  repositories).** The GitHub username has to go in **both** the URL *and* the
+  separate Username field — `https://MarcelInTO@github.com/MarcelInTO/glute.git`
+  with `MarcelInTO` in Username and the PAT in Password. Filling only one of the
+  two fails, and the errors do not name the missing field: no username anywhere
+  gives "could not read Username ... terminal prompts disabled", and a username in
+  just one place gives GitHub's "No anonymous write access", which reads like a
+  token-permission problem and is not one. Leave "mirror only protected branches"
+  off, or tags never reach GitHub and no release is ever built. SSH + a write-enabled
+  GitHub deploy key is the alternative if the password path ever regresses.
 - **The mirror's token needs the `workflow` scope.** The push mirror carries
   `.github/workflows/` along with everything else, and GitHub refuses a PAT-authed
   push that creates or updates a workflow file unless the token has `workflow`
