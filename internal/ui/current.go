@@ -36,12 +36,19 @@ type currentView struct {
 
 func newCurrentView(aliases map[string]string) *currentView {
 	t := newTable("Current · active pipelines")
+	// The name column carries the tree: the project, the ref, the stage and job
+	// names, plus a level of indent per depth. It's the flexible one, so it grows
+	// to whatever the pane can spare — without it the label's natural width would
+	// push STATUS/USER/RUNNER/TIME/DONE off a narrow pane entirely, tview having
+	// dropped the columns on the right to keep column 0 whole.
+	flexColumns(t, curColName)
 	// Selectable rows give us keyboard scrolling for a list that can outgrow the
 	// pane; the header stays fixed (SetFixed in newTable) so it never scrolls off.
 	t.SetSelectable(true, false)
 	t.SetSelectedStyle(tcell.StyleDefault.Background(tcell.ColorDarkSlateGray).Foreground(tcell.ColorWhite))
 
-	finished := newPanelTable("Recently finished pipelines · newest first")
+	// PROJECT and REF together identify the run, so both flex.
+	finished := newPanelTable("Recently finished pipelines · newest first", 0, 1)
 
 	// 2:1 split puts the finished panel at about the bottom third; the tree keeps
 	// focus so the arrow keys still scroll it.
@@ -114,8 +121,7 @@ func (v *currentView) update(s gitlab.Snapshot) {
 	for i, r := range rows {
 		row := i + 1
 		label := strings.Repeat("  ", r.depth) + r.label
-		name := tview.NewTableCell(label)
-		name.SetExpansion(1)
+		name := nameCell(label)
 		switch {
 		case r.pipeline:
 			name.SetAttributes(tcell.AttrBold)
@@ -249,8 +255,8 @@ func fillFinishedPipelines(p *panelTable, pipes []gitlab.Pipeline) {
 	for i, pipe := range pipes {
 		r := i + 1
 		p.addPath(pipe.ProjectPath)
-		p.table.SetCell(r, 0, textCell(format.Trunc(format.Base(pipe.ProjectPath), 18)))
-		p.table.SetCell(r, 1, textCell(format.Trunc(displayRef(pipe.Ref), 15)))
+		p.table.SetCell(r, 0, nameCell(format.Base(pipe.ProjectPath)))
+		p.table.SetCell(r, 1, nameCell(displayRef(pipe.Ref)))
 		p.table.SetCell(r, 2, statusCell(pipe.Status))
 		p.table.SetCell(r, 3, textCell(format.Trunc(pipe.User, 16)))
 		// HMS matches the Current tree's TIME column above for a consistent look.
@@ -290,6 +296,7 @@ func setCurrentHeader(t *tview.Table) {
 	}
 	for c, col := range cols {
 		cell := tview.NewTableCell(col.name)
+		cell.SetReference(col.name) // elide with the column; see setHeader
 		cell.SetTextColor(tcell.ColorAqua)
 		cell.SetAttributes(tcell.AttrBold)
 		cell.SetSelectable(false)

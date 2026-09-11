@@ -34,10 +34,12 @@ type workView struct {
 func newWorkView() *workView {
 	// The windowed panels get their "· last Nd" title suffix in update, once a
 	// snapshot says which window is showing.
-	fails := newPanelTable(titleFails)
-	slow := newPanelTable(titleSlowest)
-	recent := newPanelTable("Recent jobs · failures & successes")
-	top := newPanelTable(titleTopJobs)
+	// PROJECT is the identity column everywhere here; the job panels add JOB
+	// beside it, since "which project" alone doesn't say which step failed.
+	fails := newPanelTable(titleFails, 0)
+	slow := newPanelTable(titleSlowest, 0)
+	recent := newPanelTable("Recent jobs · failures & successes", 0, 1)
+	top := newPanelTable(titleTopJobs, 0, 1)
 
 	pipeRow := tview.NewFlex().SetDirection(tview.FlexColumn)
 	pipeRow.AddItem(fails.table, 0, 1, false)
@@ -119,7 +121,7 @@ func fillFailsPanel(p *panelTable, stats []gitlab.PipelineStats) {
 	for i, s := range rows {
 		r := i + 1
 		p.addPath(s.ProjectPath)
-		p.table.SetCell(r, 0, textCell(format.Trunc(format.Base(s.ProjectPath), 24)))
+		p.table.SetCell(r, 0, nameCell(format.Base(s.ProjectPath)))
 		p.table.SetCell(r, 1, numCell(strconv.Itoa(s.Runs)))
 		p.table.SetCell(r, 2, numCell(fmt.Sprintf("%.0f%%", s.FailRate()*100)))
 	}
@@ -153,7 +155,7 @@ func fillSlowestPanel(p *panelTable, stats []gitlab.PipelineStats) {
 	for i, s := range rows {
 		r := i + 1
 		p.addPath(s.ProjectPath)
-		p.table.SetCell(r, 0, textCell(format.Trunc(format.Base(s.ProjectPath), 16)))
+		p.table.SetCell(r, 0, nameCell(format.Base(s.ProjectPath)))
 		p.table.SetCell(r, 1, numCell(strconv.Itoa(s.Runs)))
 		p.table.SetCell(r, 2, numCell(format.HMS(s.DurMin)))
 		p.table.SetCell(r, 3, numCell(format.HMS(s.DurMean)))
@@ -176,8 +178,8 @@ func fillRecentJobs(p *panelTable, jobs []gitlab.Job) {
 	for i, j := range jobs {
 		r := i + 1
 		p.addPath(j.ProjectPath)
-		p.table.SetCell(r, 0, textCell(format.Trunc(format.Base(j.ProjectPath), 18)))
-		p.table.SetCell(r, 1, textCell(format.Trunc(j.Name, 15)))
+		p.table.SetCell(r, 0, nameCell(format.Base(j.ProjectPath)))
+		p.table.SetCell(r, 1, nameCell(j.Name))
 		p.table.SetCell(r, 2, statusCell(j.Status))
 		p.table.SetCell(r, 3, numCell(format.Duration(j.Duration)))
 		p.table.SetCell(r, 4, numCell(format.Ago(j.Finished)))
@@ -198,8 +200,8 @@ func fillTopJobs(p *panelTable, aggs []gitlab.JobAgg) {
 	for i, a := range aggs {
 		r := i + 1
 		p.addPath(a.ProjectPath)
-		p.table.SetCell(r, 0, textCell(format.Trunc(format.Base(a.ProjectPath), 18)))
-		p.table.SetCell(r, 1, textCell(format.Trunc(a.Name, 15)))
+		p.table.SetCell(r, 0, nameCell(format.Base(a.ProjectPath)))
+		p.table.SetCell(r, 1, nameCell(a.Name))
 		p.table.SetCell(r, 2, numCell(strconv.Itoa(a.Count)))
 		p.table.SetCell(r, 3, numCell(format.Duration(a.AvgDuration)))
 		p.table.SetCell(r, 4, numCell(fmt.Sprintf("%.0f%%", a.SuccessRate()*100)))

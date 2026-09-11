@@ -107,6 +107,29 @@ func Trunc(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
+// Elide shortens s to at most n runes by cutting out its *middle*
+// ("front…back") rather than its tail. Project and job names here share long
+// conventional prefixes ("bigproduct-service-foo", "bigproduct-service-bar"), so
+// a tail cut collapses a whole column into identical strings; keeping both ends
+// preserves the part that actually distinguishes them. The tail gets the odd
+// rune when the budget doesn't halve evenly, since the distinguishing suffix is
+// what a shared prefix hides.
+func Elide(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n <= 1 {
+		if n <= 0 {
+			return ""
+		}
+		return "…"
+	}
+	keep := n - 1 // one rune goes to the ellipsis
+	head := keep / 2
+	return string(r[:head]) + "…" + string(r[len(r)-(keep-head):])
+}
+
 // Base returns the last segment of a slash-separated path (e.g. "org/team/repo"
 // -> "repo"); paths without a slash are returned unchanged.
 func Base(p string) string {

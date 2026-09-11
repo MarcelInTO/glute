@@ -86,14 +86,14 @@ func printSnapshot(s gitlab.Snapshot) {
 
 	fmt.Printf("\n[recent pipelines: %d]\n", len(s.RecentPipelines))
 	for _, p := range head(s.RecentPipelines, 10) {
-		fmt.Printf("  %-30s %-18s %-9s %9s  %s ago\n", format.Trunc(p.ProjectPath, 30), format.Trunc(p.Ref, 18), p.Status, format.Duration(p.Duration), format.Ago(p.Finished))
+		fmt.Printf("  %-30s %-18s %-9s %9s  %s ago\n", format.Elide(p.ProjectPath, 30), format.Trunc(p.Ref, 18), p.Status, format.Duration(p.Duration), format.Ago(p.Finished))
 	}
 
 	// The Pipelines tab's historical analytics, aggregated by project/product/runner.
 	fmt.Printf("\n[pipeline stats · by project: %d]\n", len(s.PipelineStats))
 	for _, a := range head(s.PipelineStats, 10) {
 		fmt.Printf("  %-30s runs=%-5d fail=%-4d(%3.0f%%) dur min/mean/p95/max = %s / %s / %s / %s\n",
-			format.Trunc(a.ProjectPath, 30), a.Runs, a.Failed, a.FailRate()*100,
+			format.Elide(a.ProjectPath, 30), a.Runs, a.Failed, a.FailRate()*100,
 			format.Duration(a.DurMin), format.Duration(a.DurMean), format.Duration(a.DurP95), format.Duration(a.DurMax))
 	}
 
@@ -104,7 +104,7 @@ func printSnapshot(s gitlab.Snapshot) {
 
 	fmt.Printf("\n[compute · by project: %d]\n", len(s.ComputeByProject))
 	for _, a := range head(s.ComputeByProject, 10) {
-		fmt.Printf("  %-30s compute=%8s (%3.0f%%)  jobs=%d\n", format.Trunc(a.Key, 30), format.Compute(a.Compute), a.Pct, a.Runs)
+		fmt.Printf("  %-30s compute=%8s (%3.0f%%)  jobs=%d\n", format.Elide(a.Key, 30), format.Compute(a.Compute), a.Pct, a.Runs)
 	}
 
 	fmt.Printf("\n[tag performance: %d]\n", len(s.TagStats))
@@ -123,17 +123,17 @@ func printSnapshot(s gitlab.Snapshot) {
 
 	fmt.Printf("\n[running jobs: %d]\n", len(s.RunningJobs))
 	for _, j := range head(s.RunningJobs, 10) {
-		fmt.Printf("  %-30s %-18s %-9s  %s\n", format.Trunc(j.ProjectPath, 30), format.Trunc(j.Name, 18), j.Status, format.Elapsed(j.Started, j.Created))
+		fmt.Printf("  %-30s %-18s %-9s  %s\n", format.Elide(j.ProjectPath, 30), format.Trunc(j.Name, 18), j.Status, format.Elapsed(j.Started, j.Created))
 	}
 
 	fmt.Printf("\n[recent jobs: %d]\n", len(s.RecentJobs))
 	for _, j := range head(s.RecentJobs, 10) {
-		fmt.Printf("  %-30s %-18s %-9s %9s  %s ago\n", format.Trunc(j.ProjectPath, 30), format.Trunc(j.Name, 18), j.Status, format.Duration(j.Duration), format.Ago(j.Finished))
+		fmt.Printf("  %-30s %-18s %-9s %9s  %s ago\n", format.Elide(j.ProjectPath, 30), format.Trunc(j.Name, 18), j.Status, format.Duration(j.Duration), format.Ago(j.Finished))
 	}
 
 	fmt.Printf("\n[top jobs / avg length: %d]\n", len(s.TopJobs))
 	for _, a := range head(s.TopJobs, 10) {
-		fmt.Printf("  %-30s %-18s runs=%-5d avg=%9s  success=%3.0f%%\n", format.Trunc(a.ProjectPath, 30), format.Trunc(a.Name, 18), a.Count, format.Duration(a.AvgDuration), a.SuccessRate()*100)
+		fmt.Printf("  %-30s %-18s runs=%-5d avg=%9s  success=%3.0f%%\n", format.Elide(a.ProjectPath, 30), format.Trunc(a.Name, 18), a.Count, format.Duration(a.AvgDuration), a.SuccessRate()*100)
 	}
 
 	if len(s.Errors) > 0 {

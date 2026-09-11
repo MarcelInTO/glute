@@ -257,6 +257,35 @@ Keep it CGO-free so cross-compilation stays trivial.
   `rightAlignHeaders` in `format.go` for every numeric column); neither stats tab
   shows a ref at all. The moved job panels picked up both conventions — plus the
   `ScrollToBeginning()` above, which they had been missing — in the regroup.
+- **Identity columns are sized at draw time, not capped by a constant**
+  (`flexcol.go`). Each panel declares which columns say *which row this is* —
+  project, job, tag/runner key, ref, the Current tree's label — and on every draw
+  they take whatever width is left after the other columns get their natural
+  (content) widths. Two flexible columns split that budget **max-min fair**:
+  whichever needs less than an equal share keeps all of it and releases the rest,
+  so a short JOB shows whole while a long PROJECT beside it absorbs the shortfall.
+  A constant cap was wrong in *both* directions: on a wide terminal it clipped
+  names while the numbers drifted apart in whitespace, and on a narrow one it
+  could still overrun — and tview lays columns out left to right and drops the
+  ones on the **right** that no longer fit, so an oversized column 0 doesn't
+  crowd the stats, it deletes them (measured: at 64 columns the Current tree lost
+  RUNNER/TIME/DONE entirely). The cells are built by `nameCell`, which keeps the
+  untruncated string in the cell's `Reference` — the cell's own text can't be the
+  source once it has been elided once — and `flexColumns` installs a
+  `SetDrawFunc` hook that re-elides from it, since only at draw time is the
+  pane's real width known. `MaxWidth` backs the elision up for cells with no
+  recorded full text (the `(none)` placeholder) and for runes wider than one
+  cell, which `format.Elide` counts as one. Tables with a flexible column set
+  `SetEvaluateAllRows(true)` so widths don't shift as the table scrolls and so
+  tview's measurement agrees with the budget the hook just computed.
+- **Truncation, when it's needed, cuts the middle** (`format.Elide`,
+  "wevr-pla…ne-ingest"), not the tail (`format.Trunc`). Our repos share long
+  conventional prefixes, so a tail cut renders a whole column as the same string
+  — the last segment is what identifies the project, and it's exactly what a tail
+  cut drops; the odd rune goes to the tail for the same reason. `Trunc` is still
+  right for prose and for genuinely bounded fields (USER, the tree's RUNNER,
+  error text, the `refresh` preview's fixed-width columns). With flexible columns
+  in place this is now the last resort rather than the normal case.
 - A TUI owns the screen, so logs go to `<instance dir>/glute.log`, never stdout.
 - **Diagnosing a hang:** `kill -USR1 <pid>` dumps every goroutine's stack to
   `glute.log` (`watchDumpSignal` in `app.go`; SIGUSR1 is Unix-only, no-op on

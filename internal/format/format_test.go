@@ -62,3 +62,37 @@ func TestWindow(t *testing.T) {
 		}
 	}
 }
+
+func TestElide(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		// Short enough to keep whole — no ellipsis, at the boundary either.
+		{"repo", 10, "repo"},
+		{"exactlyten", 10, "exactlyten"},
+		// The point of the helper: a shared long prefix stays distinguishable,
+		// because the tail (which a plain Trunc would drop) survives.
+		{"bigproduct-service-frontend", 16, "bigprod…frontend"},
+		{"bigproduct-service-backend", 16, "bigprod…-backend"},
+		// Odd budgets give the extra rune to the tail.
+		{"abcdefghij", 6, "ab…hij"},
+		{"abcdefghij", 7, "abc…hij"},
+		// Degenerate widths.
+		{"abcdefghij", 2, "…j"},
+		{"abcdefghij", 1, "…"},
+		{"abcdefghij", 0, ""},
+		{"abcdefghij", -3, ""},
+		// The budget counts runes, not bytes, so multi-byte names aren't cut short.
+		{"héllo-wörld", 8, "hél…örld"},
+	}
+	for _, c := range cases {
+		if got := Elide(c.in, c.n); got != c.want {
+			t.Errorf("Elide(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+		if n := len([]rune(Elide(c.in, c.n))); c.n > 0 && n > c.n {
+			t.Errorf("Elide(%q, %d) = %q: %d runes, over budget", c.in, c.n, Elide(c.in, c.n), n)
+		}
+	}
+}

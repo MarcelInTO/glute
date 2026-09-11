@@ -24,9 +24,11 @@ type infraView struct {
 
 func newInfraView(aliases map[string]string) *infraView {
 	// Both titles get their "· last Nd" suffix in update, once a snapshot says
-	// which window is showing.
-	tags := newPanelTable(titleTags)
-	runners := newPanelTable(titleRunners)
+	// which window is showing. The tag / runner key is this tab's identity
+	// column, and so the flexible one — runner descriptions in particular are
+	// long enough that a fixed cap always cut them.
+	tags := newPanelTable(titleTags, 0)
+	runners := newPanelTable(titleRunners, 0)
 
 	root := tview.NewFlex().SetDirection(tview.FlexColumn)
 	root.AddItem(tags.table, 0, 1, false)
@@ -76,7 +78,7 @@ func fillJobStatsPanel(p *panelTable, keyHeader string, stats []gitlab.JobStats,
 	}
 	for i, s := range stats {
 		r := i + 1
-		p.table.SetCell(r, 0, textCell(format.Trunc(display(s.Key), 18)))
+		p.table.SetCell(r, 0, nameCell(display(s.Key)))
 		p.table.SetCell(r, 1, numCell(strconv.Itoa(s.Jobs)))
 		p.table.SetCell(r, 2, numCell(format.Compute(s.Compute)))
 		p.table.SetCell(r, 3, numCell(format.Duration(s.MeanQueue)))

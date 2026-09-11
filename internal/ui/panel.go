@@ -10,8 +10,14 @@ type panelTable struct {
 	paths []string
 }
 
-func newPanelTable(title string) *panelTable {
-	return &panelTable{table: newTable(title)}
+// newPanelTable builds a panel whose identity columns — the free-text ones that
+// say which row this is — are flex: they take whatever width the pane has left
+// over and are elided only when it isn't enough (see flexcol.go). Passing no
+// columns leaves every column sized to its own content.
+func newPanelTable(title string, flex ...int) *panelTable {
+	t := newTable(title)
+	flexColumns(t, flex...)
+	return &panelTable{table: t}
 }
 
 // setTitle replaces the panel's border title (padded like newTable does).

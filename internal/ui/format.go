@@ -65,11 +65,15 @@ func newTable(title string) *tview.Table {
 	return t
 }
 
-// setHeader writes the bold header row and resets the table body.
+// setHeader writes the bold header row and resets the table body. Each header
+// keeps its own text in the cell's Reference so that a header sitting over a
+// flexible column elides with the column (see flexcol.go) instead of being the
+// one cell that refuses to shrink and widens it.
 func setHeader(t *tview.Table, cols ...string) {
 	t.Clear()
 	for c, name := range cols {
 		cell := tview.NewTableCell(name)
+		cell.SetReference(name)
 		cell.SetTextColor(tcell.ColorAqua)
 		cell.SetAttributes(tcell.AttrBold)
 		cell.SetSelectable(false)
