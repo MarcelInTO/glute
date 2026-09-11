@@ -32,6 +32,15 @@ GO      := go
 LDFLAGS := -s -w -X $(PKG)/cmd.Version=$(VERSION)
 GOBUILD := CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)'
 
+# This project's own sources, for the gofmt targets. Deliberately not a plain
+# "." : gofmt descends into dot-directories, and CI parks the module cache at
+# $CI_PROJECT_DIR/.go because GitLab can only cache paths inside the project
+# directory. Every dependency's source would then be gofmt's to grade, and they
+# are not all gofmt-clean (tcell and pflag aren't), so `make check` passed on a
+# cache miss and failed on a hit. Lazily assigned so `find` only runs for a
+# target that needs it.
+GOFILES = $(shell find . -name '*.go' -not -path './.*' -print)
+
 # Platforms to cross-compile — one binary per entry lands in $(BIN_DIR)/, and one
 # archive per entry in $(DIST_DIR)/. The four non-Windows rows are exactly what the
 # Homebrew formula's on_macos/on_linux × on_arm/on_intel matrix needs, so dropping
@@ -93,13 +102,15 @@ vet: ## Run go vet
 
 .PHONY: fmt
 fmt: ## gofmt all sources
-	gofmt -w .
+	gofmt -w $(GOFILES)
 
 .PHONY: fmt-check
 fmt-check: ## Fail if any source needs gofmt (CI's read-only twin of `fmt`)
-	@out=$$(gofmt -l .); \
-	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
-	@echo "  gofmt clean"
+	@files="$(GOFILES)"; \
+	if [ -z "$$files" ]; then echo "  no Go sources"; exit 0; fi; \
+	out=$$(gofmt -l $$files); \
+	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi; \
+	echo "  gofmt clean"
 
 # The two things a shipped binary has to do before anything else: say what it is,
 # and produce a snapshot. `refresh --sample` needs no config, no token and no

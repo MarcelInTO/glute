@@ -365,6 +365,17 @@ Keep it CGO-free so cross-compilation stays trivial.
   (Linux docker runners) does not — glute has a real platform split in the
   `dumpsignal_*` build tags. It uses `go` directly rather than `make` on that
   matrix because the Windows runner has no dependable GNU make.
+- **`make fmt-check` grades `$(GOFILES)`, not `.`** — `gofmt` descends into
+  dot-directories, and `.gitlab-ci.yml` sets `GOPATH=$CI_PROJECT_DIR/.go`
+  because GitLab can only cache paths inside the project directory. So on a
+  cache *hit* every dependency's source became gofmt's to grade, and tcell and
+  pflag aren't gofmt-clean: the job failed with a list of files nobody in this
+  repo wrote. It stayed hidden for a week because the runner's cache is local
+  (no shared cache server) and the first pipelines logged "Failed to extract
+  cache" — `.go/` simply didn't exist yet when `fmt-check` ran. A green
+  `fmt-check` that depends on a cold cache is the failure mode to watch for
+  here; don't "fix" it by moving the module cache, which has to stay inside the
+  project dir.
 - **Runner tags on `studio.wevr.com`**: instance docker runners take untagged jobs
   (what this pipeline uses — verified against `wevr-public/cli-tester`, whose
   untagged `test:linux` lands on the "Braque/Bazille - Linux Docker" runners and
