@@ -301,14 +301,15 @@ Keep it CGO-free so cross-compilation stays trivial.
 - **Two pipelines, one Makefile.** `studio.wevr.com` is the source of truth and
   `github.com/MarcelInTO/glute` is a push mirror of it. The split exists for one
   reason: the GitLab project is **private**, and a formula in a public Homebrew
-  tap has to download from a URL anyone can reach. So GitLab builds the archives,
-  uploads them to its own generic package registry and creates the GitLab release
-  (what people with `studio.wevr.com` access download); the mirror's
-  `release.yml` publishes the public GitHub release and pushes
-  `Formula/glute.rb` to `MarcelInTO/homebrew-tap`. Both sides invoke the *same*
-  `make` targets, so they cannot drift in how a binary is produced — and
-  `make dist verify-dist formula VERSION=v1.2.3` is that same rehearsal on a
-  laptop. Nothing about the release lives only in a CI file.
+  tap (or a manifest in a public Scoop bucket) has to download from a URL anyone
+  can reach. So GitLab builds the archives, uploads them to its own generic
+  package registry and creates the GitLab release (what people with
+  `studio.wevr.com` access download); the mirror's `release.yml` publishes the
+  public GitHub release and pushes `Formula/glute.rb` to `MarcelInTO/homebrew-tap`
+  and `bucket/glute.json` to `MarcelInTO/scoop-bucket`. Both sides invoke the
+  *same* `make` targets, so they cannot drift in how a binary is produced — and
+  `make dist verify-dist formula manifest VERSION=v1.2.3` is that same rehearsal
+  on a laptop. Nothing about the release lives only in a CI file.
 - **Setting the push mirror up (GitLab → Settings → Repository → Mirroring
   repositories).** The GitHub username has to go in **both** the URL *and* the
   separate Username field — `https://MarcelInTO@github.com/MarcelInTO/glute.git`
@@ -334,13 +335,15 @@ Keep it CGO-free so cross-compilation stays trivial.
 - **Only `vX.Y.Z` tags publish.** Any other tag still runs the tests but builds
   nothing: GitLab's generic package registry requires a semver version, so a tag
   that cannot be a version cannot be a release. Prereleases (`v1.2.3-rc.1`) are
-  released on both sides but kept **out of the tap** — Homebrew compares versions
-  numerically, and a tap tracking a release candidate would push it to everyone
-  running `brew upgrade`.
+  released on both sides but kept **out of the tap and the bucket** — Homebrew
+  compares versions numerically, and a tap tracking a release candidate would push
+  it to everyone running `brew upgrade`; a bucket would do the same to
+  `scoop update`.
 - **Two spellings of the version.** The tag and the binary keep the leading `v`
   (`git describe` produces it, so a dev build and a release build agree and
-  `glute version` prints `glute v1.2.3`); archive names and the formula take the
-  bare `1.2.3`, because a leading `v` breaks Homebrew's upgrade ordering. Hence
+  `glute version` prints `glute v1.2.3`); archive names, the formula and the Scoop
+  manifest take the bare `1.2.3`, because a leading `v` breaks Homebrew's upgrade
+  ordering. Hence
   `VERSION` vs `DIST_VERSION` in the Makefile, and the explicit `"glute v#{version}"`
   in the formula's `test do` block.
 - **`verify-dist` unpacks the archive and asserts the binary inside reports the
@@ -354,7 +357,34 @@ Keep it CGO-free so cross-compilation stays trivial.
   build on any unsubstituted `@TOKEN@`, which is what catches a platform silently
   dropped from `PLATFORMS`. The four non-Windows rows of `PLATFORMS` are exactly
   the formula's `on_macos`/`on_linux` × `on_arm`/`on_intel` matrix; Windows is
-  absent from the formula because Homebrew has no Windows support.
+  absent from the formula because Homebrew has no Windows support — it is the
+  Scoop manifest's job.
+- **The Scoop manifest is the same idea for Windows** (`packaging/glute.json.in`
+  → `make manifest` → `dist/glute.json` → `bucket/glute.json` in
+  `MarcelInTO/scoop-bucket`, which `scoop bucket add marcelinto <url>` subscribes
+  to). Scoop was picked over winget and Chocolatey because a bucket is just a git
+  repo of JSON under our control — no submission queue, no moderation, and
+  `brew`-like upgrades. JSON has no comments, so `make manifest` drops the
+  template's header at the opening brace and the provenance note rides in Scoop's
+  `"##"` comment key. The release zip nests everything under
+  `glute-X.Y.Z-windows-amd64/`, so the manifest's `extract_dir` names that folder
+  and `bin` is a bare `glute.exe`; Scoop checks the sha256 on install. The
+  manifest also carries `checkver`/`autoupdate` against GitHub's
+  `releases/latest` (which excludes prereleases): the workflow doesn't use them
+  (it pushes a complete manifest), but they let Scoop's own `checkver -u` tooling
+  bump it and they document the URL scheme. Only `64bit` is offered because
+  `windows/amd64` is the only Windows row in `PLATFORMS`. The bucket is a plain
+  repo (`bucket/glute.json` + README), not the ScoopInstaller BucketTemplate,
+  whose Excavator/Pester tooling would duplicate what the release workflow
+  already does. `make manifest` also parses its output (jq or python3, whichever
+  exists) because a malformed manifest breaks `scoop install glute` for every
+  bucket user.
+- **Pushing to the tap and the bucket is one script**, `packaging/push-to-repo.sh`
+  (clone, copy, commit, push HEAD), called from both `release.yml` steps. Each
+  step is opt-in behind its own secret — `HOMEBREW_TAP_TOKEN`, `SCOOP_BUCKET_TOKEN`
+  — because the job token cannot write to another repository; one PAT with write
+  access to both repos can back both secrets. Without a secret the step warns and
+  the file is in the step summary, ready to paste.
 - **The GitLab release is created with `curl` + `CI_JOB_TOKEN`, not the `release:`
   keyword.** The keyword pulls `registry.gitlab.com/gitlab-org/release-cli`, an
   extra image a self-managed instance has to be able to reach; the API underneath

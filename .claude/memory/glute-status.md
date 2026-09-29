@@ -8,7 +8,7 @@ metadata:
 ---
 
 glute is a single-binary, read-only Go TUI dashboard for GitLab CI/CD
-(Current, Pipelines, and Jobs tabs). Repo: `/mnt/md0/devWevr/glute`; see its
+(Current, Work, and Infrastructure tabs). Repo: `/mnt/md0/devWevr/glute`; see its
 CLAUDE.md for decisions and rationale.
 
 As of 2026-07-04: Phases 1–3 are done and committed on a local `main`
@@ -98,6 +98,27 @@ right-align-headers convention is now applied to Pipelines (via
 `rightAlignHeaders`); the ref is dropped so `MR <n>` display is moot there.
 **Still deferred to the Jobs-tab rework:** right-align headers + `MR <n>` ref.
 
+As of 2026-09-03 (committed + pushed to `main`, `806de6b` + `217bf99`): the
+tabs are now Current / Work / Infrastructure (the Jobs-tab rework landed as a
+regroup, `0cbee82`). Added the **`t` history-window key** (1d/7d/30d, capped at
+`top_window`; Snapshot carries `Windows []WindowStats`, so it's a UI-only view
+switch, session-only). Then a **measured** perf pass on the real watchlist
+(`wevr` group, 81 projects, only 16 with CI in 30d, 5 return 403): the ~10s
+resync cost was the project-wide job re-list over *all* projects; it now runs
+only for projects whose full-window pipeline list returned anything
+(`bulkJobProjects`), and `concurrency` is a config key (default 16, was 8).
+Cold refresh went 20.4s → 14.2s (jobs 9.9→6.5s, enrich 8.1→5.7s).
+Marcel's explicit constraint: **projects alive only via forgotten scheduled
+pipelines must not fall through the cracks** — satisfied because the decision
+is GitLab's own pipeline list (source-blind), never `last_activity_at`.
+**Verified on the instance:** `last_activity_at` is NOT moved by pipelines
+(every active project's newest pipeline post-dated it) and would only trim
+81→36, not to 16 — so it is rejected as a skip signal, not merely deferred.
+Also measured: a group-level GraphQL `projects { pipelines(first:1,
+updatedAfter) }` query gives the exact active set in one call but with an
+erratic tail (1.6s / 11.6s / 1.7s on identical runs) — fine for a once-per-
+resync probe, unfit for the warm sweep.
+
 **KNOWN ISSUE (unresolved):** glute has hit an **intermittent 100%-CPU hang** —
 unresponsive to keys and Ctrl-C, no redraw. Seen once on the `b7eb264` build
 (pre-timer-work, so not caused by it), after ~1h idle with 0 running pipelines;
@@ -111,9 +132,14 @@ non-child). **If it recurs: `kill -USR1 <pid>` first, then read the dump in
 **Why:** Records live status and next-steps that aren't obvious from the code.
 
 **How to apply:**
-- **Next:** rework the **Jobs tab** the same way the Pipelines tab was (drop its
-  redundant Running panel; add optimization-oriented job-level stats). Follow-ups
-  noted during the Pipelines rework: a compute-by-product panel was dropped as
+- **Next perf lever (not started):** the resync/cold job phase is now bounded
+  by the *deepest* busy project's sequential page chain on the REST jobs
+  endpoint — 0.6–1.7s per 100-job page (300–400KB payloads, no `x-total`
+  headers), and 5 projects have ≥100 in-window jobs on page 1 alone. Fetching
+  pages 2..k in parallel after page 1 (stop once a page falls past the window)
+  would roughly halve it. Also available: `resync_interval` as a config knob,
+  and dropping 403 projects from the poll set until the next resolve.
+- Follow-ups noted during the Pipelines rework: a compute-by-product panel was dropped as
   unhelpful (dull with a single configured product) but `ComputeByProduct`/
   `ByProject` remain in the Snapshot (used by the `refresh` preview) if a panel
   ever wants them; a like-for-like runner comparison (same job on ≥2 runners) and
@@ -123,7 +149,22 @@ non-child). **If it recurs: `kill -USR1 <pid>` first, then read the dump in
 - **Deferred:** the Runners tab (dropped — admin-only metric); release
   automation (cross-builds exist via `make`, but no GoReleaser / macOS
   notarization / Windows signing). In-memory incremental caching is now DONE;
-  a *persistent* (cross-restart) cache is still deferred, as is gating the warm
-  ~770ms floor (the 42 empty `updated_after` calls) on project `last_activity_at`.
+  a *persistent* (cross-restart) cache is still deferred. Gating the warm
+  per-project sweep on `last_activity_at` is **rejected** (see 2026-09-03: CI
+  doesn't move it); the sweep floor is ~1.4s for 81 projects and only
+  `concurrency` shrinks it.
 - Git: remote `origin` is `git@studio.wevr.com:wevr/tech/glute.git`; work lands
   on `main`.
+
+As of 2026-09-29 (committed + pushed to `main`): **Scoop distribution for Windows**
+set up as the twin of the Homebrew tap. `packaging/glute.json.in` → `make manifest`
+→ `dist/glute.json`; `release.yml` pushes it to `bucket/glute.json` in the new
+public repo `github.com/MarcelInTO/scoop-bucket` (created this session, seeded with
+the v0.1.0 manifest, verified against Scoop's schema and the real release zip's
+sha256). Both tap and bucket pushes now go through `packaging/push-to-repo.sh`.
+**Pending on Marcel:** add a `SCOOP_BUCKET_TOKEN`
+repository secret on the GitHub mirror (a PAT with write access to scoop-bucket —
+the tap PAT works if it can write there); until then the bucket step warns and the
+manifest is in the step summary. Not exercised on a real Windows machine —
+`scoop install glute` from the bucket is the first thing to try there. Windows on
+ARM is deliberately not offered (no `windows/arm64` in PLATFORMS).

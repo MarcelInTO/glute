@@ -6,8 +6,8 @@
 # than a heredoc inside CI means the formula can be generated and read locally
 # before a tag is ever spent on it.
 #
-# Windows is absent by design: Homebrew has no Windows support. Windows users take
-# the .zip from the release page.
+# Windows is absent by design: Homebrew has no Windows support. Windows is served
+# by the Scoop manifest, glute.json.in, generated the same way by `make manifest`.
 class Glute < Formula
   desc "Terminal dashboard for GitLab CI/CD pipeline and job statistics"
   homepage "https://github.com/MarcelInTO/glute"

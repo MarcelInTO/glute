@@ -30,6 +30,13 @@ On macOS and Linux:
 brew install marcelinto/tap/glute
 ```
 
+On Windows, with [Scoop](https://scoop.sh):
+
+```powershell
+scoop bucket add marcelinto https://github.com/MarcelInTO/scoop-bucket
+scoop install glute
+```
+
 Otherwise grab the archive for your platform from the
 [latest release](https://github.com/MarcelInTO/glute/releases/latest), unpack it,
 and put `glute` on your `PATH`. The binaries are unsigned, so a browser download
@@ -89,17 +96,18 @@ projects = ["org/legacy-gateway"]
 Releases are cut from a `vX.Y.Z` tag. The GitLab project on `studio.wevr.com` is
 the source of truth; `github.com/MarcelInTO/glute` is a push mirror of it, and the
 work is split because the GitLab project is private while a public Homebrew tap
-needs a URL anyone can reach:
+or Scoop bucket needs a URL anyone can reach:
 
 | Where | On a `vX.Y.Z` tag |
 | --- | --- |
 | GitLab (`.gitlab-ci.yml`) | builds the five archives, uploads them to the project's generic package registry, and creates the GitLab release pointing at them |
-| GitHub (`.github/workflows/release.yml`) | builds the same archives, creates the public GitHub release with build provenance, and pushes `Formula/glute.rb` to `MarcelInTO/homebrew-tap` |
+| GitHub (`.github/workflows/release.yml`) | builds the same archives, creates the public GitHub release with build provenance, and pushes `Formula/glute.rb` to `MarcelInTO/homebrew-tap` and `bucket/glute.json` to `MarcelInTO/scoop-bucket` |
 
 A prerelease tag (`v1.2.3-rc.1`) is released on both sides but deliberately kept
-out of the tap — Homebrew versions are numeric, and a tap tracking a release
-candidate would push it to everyone running `brew upgrade`. Tags that are not
-`vX.Y.Z` still run the tests but publish nothing.
+out of the tap and the bucket — Homebrew versions are numeric, and a tap tracking
+a release candidate would push it to everyone running `brew upgrade` (a bucket,
+to everyone running `scoop update`). Tags that are not `vX.Y.Z` still run the
+tests but publish nothing.
 
 Rehearse the whole thing locally before spending a tag — this is exactly what
 both pipelines run:
@@ -108,12 +116,18 @@ both pipelines run:
 make check                          # gofmt, vet, tests
 make dist        VERSION=v1.2.3     # archives + SHA256SUMS in dist/
 make verify-dist VERSION=v1.2.3     # unpack and assert the binary reports v1.2.3
-make formula     VERSION=v1.2.3     # dist/glute.rb from those checksums
+make formula     VERSION=v1.2.3     # dist/glute.rb (Homebrew) from those checksums
+make manifest    VERSION=v1.2.3     # dist/glute.json (Scoop) from the same checksums
 ```
 
 `.github/workflows/release.yml` also has a `workflow_dispatch` dry run: it builds
-the archives and prints the formula to the step summary without creating a release
-or touching the tap.
+the archives and prints the formula and manifest to the step summary without
+creating a release or touching the tap or the bucket.
+
+The pushes to the tap and the bucket are opt-in: each needs a repository secret on
+the mirror (`HOMEBREW_TAP_TOKEN`, `SCOOP_BUCKET_TOKEN`) holding a token with write
+access to that repo. Without one, the step warns and leaves the file in the step
+summary to commit by hand — or with `packaging/push-to-repo.sh`.
 
 Then:
 

@@ -12,6 +12,7 @@
 #   make dist       stage release archives + SHA256SUMS in dist/
 #   make verify-dist  unpack this host's archive and self-check it
 #   make formula    generate the Homebrew formula from dist/SHA256SUMS
+#   make manifest   generate the Scoop manifest from dist/SHA256SUMS
 #   make tidy       tidy go.mod / go.sum
 #   make clean      remove bin/ and dist/
 #   make help       list targets
@@ -24,8 +25,9 @@ VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev
 
 # Two spellings of the same version. The git tag and the binary keep the leading
 # "v" (`git describe` produces it, so a dev build and a release build agree);
-# archive names and the Homebrew formula take the bare X.Y.Z, because Homebrew
-# compares versions numerically and a leading "v" breaks upgrade ordering.
+# archive names, the Homebrew formula and the Scoop manifest take the bare X.Y.Z,
+# because Homebrew compares versions numerically and a leading "v" breaks upgrade
+# ordering.
 DIST_VERSION := $(patsubst v%,%,$(VERSION))
 
 GO      := go
@@ -44,7 +46,9 @@ GOFILES = $(shell find . -name '*.go' -not -path './.*' -print)
 # Platforms to cross-compile — one binary per entry lands in $(BIN_DIR)/, and one
 # archive per entry in $(DIST_DIR)/. The four non-Windows rows are exactly what the
 # Homebrew formula's on_macos/on_linux × on_arm/on_intel matrix needs, so dropping
-# one here silently breaks `make formula`.
+# one here silently breaks `make formula`; windows/amd64 is what the Scoop manifest
+# needs (`make manifest`). Windows on ARM would be a windows/arm64 row here plus an
+# "arm64" block in packaging/glute.json.in.
 PLATFORMS := linux/amd64 linux/arm64 darwin/arm64 darwin/amd64 windows/amd64
 
 # Rides along in every archive: MIT's attribution requirement follows the binary,
@@ -55,8 +59,9 @@ DIST_EXTRA := LICENSE README.md
 # ("<hash>  <file>"), which is what `make formula` and `shasum -c` both expect.
 SHA256 := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo 'shasum -a 256')
 
-# Where the formula points for downloads. The GitLab project is private, so the
-# public GitHub mirror's release assets are what `brew install` can actually reach.
+# Where the formula and the Scoop manifest point for downloads. The GitLab project
+# is private, so the public GitHub mirror's release assets are what `brew install`
+# and `scoop install` can actually reach.
 RELEASE_URL ?= https://github.com/MarcelInTO/glute/releases/download/$(VERSION)
 
 # Claude Code keeps this project's memory under a per-project dir in $HOME.
@@ -191,6 +196,31 @@ formula: ## Generate dist/glute.rb from dist/SHA256SUMS (run after `make dist`)
 		echo "error: unsubstituted placeholder left in the formula"; \
 		grep -n '@[A-Z_]*@' $(DIST_DIR)/$(BINARY).rb; exit 1; fi
 	@echo "  wrote $(DIST_DIR)/$(BINARY).rb ($(DIST_VERSION))"
+
+# The Windows counterpart of `formula`: the Scoop manifest, from the same checksums
+# and with the same placeholder guard, so it can never point at bytes other than the
+# ones `dist` just produced. JSON has no comments, so the template's header is
+# dropped (everything before the opening brace) and the provenance rides in Scoop's
+# "##" comment key instead. The result is parsed once before it is declared written:
+# a manifest that is not valid JSON breaks `scoop install glute` for every user of
+# the bucket, and that is the one thing sed cannot promise.
+.PHONY: manifest
+manifest: ## Generate dist/glute.json (Scoop) from dist/SHA256SUMS (run after `make dist`)
+	@test -f $(DIST_DIR)/SHA256SUMS || { echo "error: run 'make dist' first"; exit 1; }
+	@sum=$$(awk -v f="$(BINARY)-$(DIST_VERSION)-windows-amd64.zip" '$$2 == f {print $$1}' $(DIST_DIR)/SHA256SUMS); \
+	[ -n "$$sum" ] || { echo "error: no checksum for windows-amd64 in $(DIST_DIR)/SHA256SUMS"; exit 1; }; \
+	sed -n '/^{/,$$p' packaging/$(BINARY).json.in \
+		| sed -e 's|@VERSION@|$(DIST_VERSION)|g' -e 's|@BASE@|$(RELEASE_URL)|g' \
+			-e "s|@SHA_WINDOWS_AMD64@|$$sum|g" > $(DIST_DIR)/$(BINARY).json
+	@if grep -q '@[A-Z_]*@' $(DIST_DIR)/$(BINARY).json; then \
+		echo "error: unsubstituted placeholder left in the manifest"; \
+		grep -n '@[A-Z_]*@' $(DIST_DIR)/$(BINARY).json; exit 1; fi
+	@if command -v jq >/dev/null 2>&1; then \
+		jq -e . $(DIST_DIR)/$(BINARY).json > /dev/null || exit 1; \
+	elif command -v python3 >/dev/null 2>&1; then \
+		python3 -m json.tool $(DIST_DIR)/$(BINARY).json > /dev/null || exit 1; \
+	else echo "  warning: neither jq nor python3 found, manifest not parsed"; fi
+	@echo "  wrote $(DIST_DIR)/$(BINARY).json ($(DIST_VERSION))"
 
 .PHONY: tidy
 tidy: ## Tidy go.mod / go.sum

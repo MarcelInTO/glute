@@ -1,19 +1,21 @@
-# Publishes the public half of a glute release: the GitHub Release that the Homebrew
-# formula downloads from, and the formula itself in MarcelInTO/homebrew-tap.
+# Publishes the public half of a glute release: the GitHub Release that the package
+# managers download from, plus the Homebrew formula in MarcelInTO/homebrew-tap and the
+# Scoop manifest in MarcelInTO/scoop-bucket.
 #
 # The tag arrives here from studio.wevr.com through the push mirror. GitLab CI has
 # already built the same commit and published the internal GitLab release from its own
 # package registry; this side exists because that project is private, and a formula in
-# a public tap has to point at a URL anyone can reach.
+# a public tap (or a manifest in a public bucket) has to point at a URL anyone can reach.
 #
 # Both sides build from the same Makefile targets, so the archives are produced the
-# same way in both places — and `make dist verify-dist formula VERSION=v1.2.3` is the
-# same rehearsal on a laptop.
+# same way in both places — and `make dist verify-dist formula manifest VERSION=v1.2.3`
+# is the same rehearsal on a laptop.
 #
 # Trigger: pushing a tag `vX.Y.Z` (or `vX.Y.Z-rc.1`). `workflow_dispatch` builds the
-# same archives, uploads them as workflow artifacts and prints the formula to the step
-# summary, but creates no Release and touches no tap — a dry run of the packaging, so a
-# mistake costs a re-run rather than a burnt version number.
+# same archives, uploads them as workflow artifacts and prints the formula and manifest
+# to the step summary, but creates no Release and pushes to neither packaging repo — a
+# dry run of the packaging, so a mistake costs a re-run rather than a burnt version
+# number.
 name: release
 
 on:
@@ -64,9 +66,10 @@ jobs:
             echo "::error::'$tag' is not a vX.Y.Z or vX.Y.Z-prerelease tag"; exit 1; }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-          # A prerelease is marked as one on the Release and is kept out of the tap:
-          # Homebrew versions are numeric, and a tap tracking `0.3.0-rc.1` would push a
-          # release candidate to everyone running `brew upgrade`.
+          # A prerelease is marked as one on the Release and is kept out of the tap and
+          # the bucket: Homebrew versions are numeric, and a tap tracking `0.3.0-rc.1`
+          # would push a release candidate to everyone running `brew upgrade`; a bucket
+          # would do the same to `scoop update`.
           case "$tag" in
             *-*) echo "prerelease=true"  >> "$GITHUB_OUTPUT" ;;
             *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
@@ -120,6 +123,13 @@ jobs:
           brew install marcelinto/tap/glute
           ```
 
+          On Windows, [Scoop](https://scoop.sh) does the same:
+
+          ```powershell
+          scoop bucket add marcelinto https://github.com/MarcelInTO/scoop-bucket
+          scoop install glute
+          ```
+
           The binaries are unsigned. macOS quarantines anything downloaded through a
           browser, so if Gatekeeper refuses to launch it, either download with `curl`
           instead or clear the flag: `xattr -d com.apple.quarantine /usr/local/bin/glute`.
@@ -136,20 +146,26 @@ jobs:
             $flags \
             dist/glute-* dist/SHA256SUMS
 
-      # Written from the checksums `make dist` computed, so the formula can never
-      # disagree with the assets it points at. Always generated, including on a dry run,
-      # so it can be read in the step summary before a tag is spent; only the push to
-      # the tap below is gated.
-      - name: Generate Homebrew formula
+      # Written from the checksums `make dist` computed, so neither file can disagree
+      # with the assets it points at. Always generated, including on a dry run, so both
+      # can be read in the step summary before a tag is spent; only the pushes below
+      # are gated.
+      - name: Generate Homebrew formula and Scoop manifest
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           make formula VERSION="$TAG"
+          make manifest VERSION="$TAG"
           {
             echo '### Homebrew formula'
             echo 'Commit this to `Formula/glute.rb` in the tap if it was not pushed automatically.'
             echo '```ruby'
             cat dist/glute.rb
+            echo '```'
+            echo '### Scoop manifest'
+            echo 'Commit this to `bucket/glute.json` in the bucket if it was not pushed automatically.'
+            echo '```json'
+            cat dist/glute.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -161,31 +177,34 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-      # Opt-in: does nothing until a HOMEBREW_TAP_TOKEN secret with write access to the
-      # tap repository exists. Without it the formula is still in the step summary above,
-      # ready to paste. github.token cannot be used here — it is scoped to this
-      # repository only, and the tap is a different one.
+      # Opt-in: each push does nothing until its secret exists — a token with write
+      # access to that packaging repository (one PAT can back both secrets if it can
+      # write to both repos). Without it the file is still in the step summary above,
+      # ready to paste. github.token cannot be used here: it is scoped to this
+      # repository only, and the tap and the bucket are different ones. The push itself
+      # is packaging/push-to-repo.sh, shared by both steps.
       - name: Push formula to the tap
         if: github.event_name == 'push' && steps.version.outputs.prerelease == 'false'
         env:
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          PUSH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
           TAP_REPO: ${{ github.repository_owner }}/homebrew-tap
         run: |
-          if [ -z "$TAP_TOKEN" ]; then
+          if [ -z "$PUSH_TOKEN" ]; then
             echo "::warning::HOMEBREW_TAP_TOKEN not set — skipping the tap update; the formula is in the step summary."
             exit 0
           fi
-          git clone --depth 1 "https://x-access-token:$TAP_TOKEN@github.com/$TAP_REPO.git" tap
-          cd tap
-          branch=$(GH_TOKEN="$TAP_TOKEN" gh api "repos/$TAP_REPO" --jq .default_branch 2>/dev/null || true)
-          branch=${branch:-main}
-          git checkout -B "$branch"
-          mkdir -p Formula
-          cp ../dist/glute.rb Formula/glute.rb
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/glute.rb
-          if git diff --cached --quiet; then echo "formula already current"; exit 0; fi
-          git commit -m "glute $VERSION"
-          git push origin "HEAD:refs/heads/$branch"
+          sh packaging/push-to-repo.sh "$TAP_REPO" dist/glute.rb Formula/glute.rb "glute $VERSION"
+
+      - name: Push manifest to the bucket
+        if: github.event_name == 'push' && steps.version.outputs.prerelease == 'false'
+        env:
+          PUSH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BUCKET_REPO: ${{ github.repository_owner }}/scoop-bucket
+        run: |
+          if [ -z "$PUSH_TOKEN" ]; then
+            echo "::warning::SCOOP_BUCKET_TOKEN not set — skipping the bucket update; the manifest is in the step summary."
+            exit 0
+          fi
+          sh packaging/push-to-repo.sh "$BUCKET_REPO" dist/glute.json bucket/glute.json "glute $VERSION"
