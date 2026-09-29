@@ -170,9 +170,11 @@ ARM is deliberately not offered (no `windows/arm64` in PLATFORMS).
 
 As of 2026-09-29 (later, committed to `main`): **v0.2.0 released** — the first
 tag through the whole chain, all green. GitLab pipeline 234929 (test → build →
-release) published the GitLab release; the mirror carried the tag in ~5 min
-(the plain `main` push before it propagated in ~15s — the throttle bites on
-tags, not always on commits); GitHub `release` run 36624526869 created the
+release) published the GitLab release; the mirror carried the tag in ~5 min,
+while the plain `main` pushes before it propagated in ~15s — the 5 minutes is a
+minimum spacing between mirror runs (a push to an idle mirror goes at once; the
+tag, pushed minutes after the commit, waited), see CLAUDE.md's mirror bullets;
+GitHub `release` run 36624526869 created the
 release with provenance and pushed `Formula/glute.rb` 0.2.0 to the tap and
 `bucket/glute.json` 0.2.0 to the bucket via `packaging/push-to-repo.sh`, both
 verified against the release's SHA256SUMS (and the bucket URL re-downloaded and

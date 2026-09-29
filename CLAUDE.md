@@ -342,7 +342,22 @@ Keep it CGO-free so cross-compilation stays trivial.
   `brew upgrade`) roughly 5 minutes later — measured on v0.0.1: tag pushed, tag
   visible on GitHub 5 min later, release workflow done 29s after that. The gap is
   the mirror's cadence, not a failure; don't go hunting for a broken workflow
-  during it.
+  during it. The 5 minutes is a *minimum spacing between mirror runs*, not a
+  fixed delay: on v0.2.0 two commit pushes to an idle mirror were on GitHub in
+  ~15s, while the tag, pushed a few minutes after the commit it sat on, waited
+  the full 5. Verifying CI on `main` before tagging (the practice, next bullet)
+  therefore means the tag usually waits out the interval; pushing tag and commit
+  together would ride one mirror run but forfeits that check.
+- **Cutting a release: verify green on both sides before tagging.** Push `main`,
+  wait for the GitLab pipeline *and* the GitHub `ci.yml` run on the mirrored
+  commit (the only native macOS/Windows test), then tag. The tag is what publishes
+  on both sides, and a red commit under a tag burns a version number. Then watch
+  both release pipelines (`glab api projects/<enc>/pipelines?ref=vX.Y.Z` and
+  `gh run list --branch vX.Y.Z`) and confirm the outputs against the release's
+  `SHA256SUMS`: the tap formula's four sha256 values and the bucket manifest's
+  hash, and that the "Push formula"/"Push manifest" steps say *pushed*, not
+  skipped. Done this way for v0.2.0; the bucket's URL was also re-downloaded and
+  re-hashed once, which is the check that proves a manifest, not just the file.
 - **The mirror's token needs the `workflow` scope.** The push mirror carries
   `.github/workflows/` along with everything else, and GitHub refuses a PAT-authed
   push that creates or updates a workflow file unless the token has `workflow`
