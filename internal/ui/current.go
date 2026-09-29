@@ -47,8 +47,9 @@ func newCurrentView(aliases map[string]string) *currentView {
 	t.SetSelectable(true, false)
 	t.SetSelectedStyle(tcell.StyleDefault.Background(tcell.ColorDarkSlateGray).Foreground(tcell.ColorWhite))
 
-	// PROJECT and REF together identify the run, so both flex.
-	finished := newPanelTable("Recently finished pipelines · newest first", 0, 1)
+	// ID leads (see fillFinishedPipelines); PROJECT and REF together identify
+	// the run, so those two flex.
+	finished := newPanelTable("Recently finished pipelines · newest first", 1, 2)
 
 	// 2:1 split puts the finished panel at about the bottom third; the tree keeps
 	// focus so the arrow keys still scroll it.
@@ -70,8 +71,9 @@ func (v *currentView) displayRunner(runner string) string {
 // curRow is one flattened tree row queued for rendering.
 type curRow struct {
 	depth    int
-	pipeline bool // true for a pipeline row, false for a job row
-	child    bool // pipeline row that is a downstream child (not a root)
+	pipeline bool  // true for a pipeline row, false for a job row
+	child    bool  // pipeline row that is a downstream child (not a root)
+	id       int64 // the pipeline's id (pipeline rows only; job rows show none)
 	label    string
 	status   gitlab.Status
 	user     string        // triggering user (pipeline rows only)
@@ -111,9 +113,11 @@ func (v *currentView) update(s gitlab.Snapshot) {
 		none.SetTextColor(tcell.ColorSilver)
 		none.SetSelectable(false)
 		none.SetExpansion(1)
-		t.SetCell(1, 0, none)
-		for i := 1; i < currentCols; i++ {
-			t.SetCell(1, i, blankCell())
+		t.SetCell(1, curColName, none)
+		for i := 0; i < currentCols; i++ {
+			if i != curColName {
+				t.SetCell(1, i, blankCell())
+			}
 		}
 		return
 	}
@@ -128,6 +132,7 @@ func (v *currentView) update(s gitlab.Snapshot) {
 		default:
 			name.SetTextColor(tcell.ColorSilver)
 		}
+		t.SetCell(row, curColID, curNumCell(pipelineIDText(r.id)))
 		t.SetCell(row, curColName, name)
 		t.SetCell(row, curColStatus, curStatusCell(r.status))
 		t.SetCell(row, curColUser, curTextCell(format.Trunc(r.user, 16)))
@@ -192,6 +197,7 @@ func flattenActive(aps []gitlab.ActivePipeline) []curRow {
 			depth:    depth,
 			pipeline: true,
 			child:    isChild,
+			id:       ap.ID,
 			label:    label,
 			status:   ap.Status,
 			user:     ap.User,
@@ -227,21 +233,26 @@ func flattenActive(aps []gitlab.ActivePipeline) []curRow {
 // recently finished pipelines, newest first. s.RecentPipelines is already
 // finished-only and sorted newest-finished-first, so the rows the user most
 // likely just watched sit at the top; older ones beyond the pane's height clip
-// off the bottom. USER mirrors the tree above (who triggered it);
-// STATUS/DURATION/WHEN answer "did it pass, and when". This is deliberately
-// close to the Pipelines tab's recent panel but adds USER, so it's kept separate
-// rather than shared.
+// off the bottom. ID leads for the same reason as in the tree above: the
+// pipeline's id is the number the team quotes as a build number. USER mirrors
+// the tree too (who triggered it); STATUS/DURATION/WHEN answer "did it pass,
+// and when". This is deliberately close to the Pipelines tab's recent panel but
+// adds USER, so it's kept separate rather than shared.
 func fillFinishedPipelines(p *panelTable, pipes []gitlab.Pipeline) {
-	const colDuration, colWhen = 4, 5
-	p.reset("PROJECT", "REF", "STATUS", "USER", "DURATION", "WHEN")
+	const colID, colDuration, colWhen = 0, 5, 6
+	p.reset("ID", "PROJECT", "REF", "STATUS", "USER", "DURATION", "WHEN")
 	// A header reads best justified the same way as its column's data, so right-
-	// align the two numeric headers to match their right-aligned cells (the tree
-	// above does the same for TIME/DONE via setCurrentHeader).
-	for _, c := range []int{colDuration, colWhen} {
+	// align the numeric headers to match their right-aligned cells (the tree
+	// above does the same for ID/TIME/DONE via setCurrentHeader).
+	for _, c := range []int{colID, colDuration, colWhen} {
 		if cell := p.table.GetCell(0, c); cell != nil {
 			cell.SetAlign(tview.AlignRight)
 		}
 	}
+	// The ID column is content-sized, like the tree's: on a wide pane every
+	// other column here shares the slack (they all expand), and an expanding
+	// first column would park the ids behind a gutter of blank space.
+	p.table.GetCell(0, colID).SetExpansion(0)
 	// Pin the view to the top so the newest rows always show. tview's Table sets
 	// a sticky "trackEnd" the first time its content fits the pane — which it does
 	// on the empty first render, before the initial refresh lands — and then keeps
@@ -249,28 +260,36 @@ func fillFinishedPipelines(p *panelTable, pipes []gitlab.Pipeline) {
 	// most-recent rows this panel exists to show. ScrollToBeginning clears it.
 	p.table.ScrollToBeginning()
 	if len(pipes) == 0 {
-		emptyRow(p.table, 6)
+		emptyRowAt(p.table, 7, 1) // "(none)" under PROJECT, not the ID column
 		return
 	}
 	for i, pipe := range pipes {
 		r := i + 1
 		p.addPath(pipe.ProjectPath)
-		p.table.SetCell(r, 0, nameCell(format.Base(pipe.ProjectPath)))
-		p.table.SetCell(r, 1, nameCell(displayRef(pipe.Ref)))
-		p.table.SetCell(r, 2, statusCell(pipe.Status))
-		p.table.SetCell(r, 3, textCell(format.Trunc(pipe.User, 16)))
+		p.table.SetCell(r, colID, curNumCell(pipelineIDText(pipe.ID)))
+		p.table.SetCell(r, 1, nameCell(format.Base(pipe.ProjectPath)))
+		p.table.SetCell(r, 2, nameCell(displayRef(pipe.Ref)))
+		p.table.SetCell(r, 3, statusCell(pipe.Status))
+		p.table.SetCell(r, 4, textCell(format.Trunc(pipe.User, 16)))
 		// HMS matches the Current tree's TIME column above for a consistent look.
 		p.table.SetCell(r, colDuration, numCell(format.HMS(pipe.Duration)))
 		p.table.SetCell(r, colWhen, numCell(format.Ago(pipe.Finished)))
 	}
 }
 
-// Current table column indices. USER (who triggered the pipeline) is filled on
-// pipeline rows; RUNNER (where a job ran) is filled on job rows — they never
-// coincide, so they sit adjacent as the row's attribution columns. currentCols
-// is the count (the iota block leaves it as the last value).
+// Current table column indices. ID leads: the pipeline's instance-wide id
+// (Pipeline.ID — the "#N" GitLab shows and the number in its URL), which the
+// team quotes as a build number. It's filled on pipeline rows, roots and
+// downstream children alike, and deliberately blank on job rows: nobody quotes
+// job ids, and a column of them would only be noise. Sitting before the
+// indented name column, the ids line up regardless of tree depth. USER (who
+// triggered the pipeline) is filled on pipeline rows; RUNNER (where a job ran)
+// is filled on job rows — they never coincide, so they sit adjacent as the
+// row's attribution columns. currentCols is the count (the iota block leaves it
+// as the last value).
 const (
-	curColName = iota
+	curColID = iota
+	curColName
 	curColStatus
 	curColUser
 	curColRunner
@@ -280,13 +299,14 @@ const (
 )
 
 // setCurrentHeader writes the Current tab's header, expanding only the name
-// column so the status/user/runner/time/done columns size to their content.
+// column so the id/status/user/runner/time/done columns size to their content.
 func setCurrentHeader(t *tview.Table) {
 	cols := []struct {
 		name   string
 		expand int
 		align  int
 	}{
+		{"ID", 0, tview.AlignRight},
 		{"PIPELINE / JOB", 1, tview.AlignLeft},
 		{"STATUS", 0, tview.AlignLeft},
 		{"USER", 0, tview.AlignLeft},

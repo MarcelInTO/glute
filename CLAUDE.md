@@ -252,8 +252,8 @@ Keep it CGO-free so cross-compilation stays trivial.
   (`refs/merge-requests/<n>/head|merge`) render as `MR <n>` via `displayRef` (used
   by both the Current tree label and the finished panel); branches/tags pass
   through. A numeric column right-aligns its **header** to match its right-aligned
-  data (`setCurrentHeader` does this for TIME/DONE, `fillFinishedPipelines` for
-  DURATION/WHEN, and the Work/Infrastructure tabs via the shared
+  data (`setCurrentHeader` does this for ID/TIME/DONE, `fillFinishedPipelines`
+  for ID/DURATION/WHEN, and the Work/Infrastructure tabs via the shared
   `rightAlignHeaders` in `format.go` for every numeric column); neither stats tab
   shows a ref at all. The moved job panels picked up both conventions — plus the
   `ScrollToBeginning()` above, which they had been missing — in the regroup.
@@ -295,6 +295,23 @@ Keep it CGO-free so cross-compilation stays trivial.
   grab a dump *before* killing it — a wedged TUI is unresponsive to keys and
   Ctrl-C because the event loop itself is stuck.
 - Muted text uses `silver` (not `gray`) so it stays legible on dark terminals.
+- **Status colors** (`statusColor`): success green, failed red, canceled/skipped
+  silver, **running DodgerBlue**, and every other active state (created, pending,
+  preparing, waiting-for-resource, scheduled) yellow — so on a busy server the
+  rows actually executing are told apart from the ones queued for a runner,
+  which was the request that split them. DodgerBlue rather than `tcell.ColorBlue`
+  for the same reason as silver over gray (the ANSI blue is near-illegible on
+  dark terminals), and not aqua, which the headers own.
+- **Both Current panels lead with an ID column**: the pipeline's instance-wide
+  id (`Pipeline.ID` — the `#N` GitLab shows and the number in its URL), which
+  the team quotes as a build number. Filled on pipeline rows only, roots and `↳`
+  children alike; job rows leave it blank on purpose — nobody quotes job ids and
+  a column of them reads as noise. It sits *before* the name column so the ids
+  line up regardless of tree depth, and it is content-sized in both panels (the
+  finished panel's other columns all expand, so an expanding ID column would
+  park the ids behind a gutter). Not the per-project `IID`: that's the other
+  candidate if "the number people quote" ever turns out to be the small
+  per-project one, and it's a one-field swap.
 
 ## CI & releases
 

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,7 +39,12 @@ func windowSuffix(w time.Duration) string {
 	return " · last " + format.Window(w)
 }
 
-// statusColor maps a CI status to a cell color.
+// statusColor maps a CI status to a cell color. Running has a color of its own
+// so that on a busy server the rows actually executing stand out from the ones
+// merely queued for a runner (pending, created, waiting…), which stay yellow.
+// It's DodgerBlue rather than tcell.ColorBlue for the same reason muted text is
+// silver rather than gray — the ANSI blue is near-illegible on dark terminals —
+// and not aqua, which the headers own.
 func statusColor(s gitlab.Status) tcell.Color {
 	switch {
 	case s == gitlab.StatusSuccess:
@@ -47,11 +53,22 @@ func statusColor(s gitlab.Status) tcell.Color {
 		return tcell.ColorRed
 	case s == gitlab.StatusCanceled, s == gitlab.StatusSkipped:
 		return tcell.ColorSilver
+	case s == gitlab.StatusRunning:
+		return tcell.ColorDodgerBlue
 	case s.IsActive():
 		return tcell.ColorYellow
 	default:
 		return tcell.ColorWhite
 	}
+}
+
+// pipelineIDText renders a pipeline's instance-wide id for an ID column, or
+// nothing when it isn't known — a zero id is a placeholder, not pipeline #0.
+func pipelineIDText(id int64) string {
+	if id <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(id, 10)
 }
 
 // newTable builds a bordered, non-selectable table with a fixed header row.
@@ -113,15 +130,23 @@ func statusCell(s gitlab.Status) *tview.TableCell {
 	return c
 }
 
-// emptyRow renders a single muted "(none)" row spanning cols columns.
+// emptyRow renders a single muted "(none)" row spanning cols columns, with the
+// text in the first column.
 func emptyRow(t *tview.Table, cols int) {
-	none := tview.NewTableCell("(none)")
-	none.SetTextColor(tcell.ColorSilver)
-	none.SetExpansion(1)
-	t.SetCell(1, 0, none)
-	for i := 1; i < cols; i++ {
-		blank := tview.NewTableCell("")
-		blank.SetExpansion(1)
-		t.SetCell(1, i, blank)
+	emptyRowAt(t, cols, 0)
+}
+
+// emptyRowAt is emptyRow with the "(none)" text in column at — for a panel
+// whose first column is a narrow numeric one (the finished panel's ID), where
+// the placeholder belongs under the name column beside it instead.
+func emptyRowAt(t *tview.Table, cols, at int) {
+	for i := 0; i < cols; i++ {
+		cell := tview.NewTableCell("")
+		if i == at {
+			cell.SetText("(none)")
+			cell.SetTextColor(tcell.ColorSilver)
+		}
+		cell.SetExpansion(1)
+		t.SetCell(1, i, cell)
 	}
 }
