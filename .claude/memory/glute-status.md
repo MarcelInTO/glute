@@ -162,9 +162,21 @@ set up as the twin of the Homebrew tap. `packaging/glute.json.in` → `make mani
 public repo `github.com/MarcelInTO/scoop-bucket` (created this session, seeded with
 the v0.1.0 manifest, verified against Scoop's schema and the real release zip's
 sha256). Both tap and bucket pushes now go through `packaging/push-to-repo.sh`.
-**Pending on Marcel:** add a `SCOOP_BUCKET_TOKEN`
-repository secret on the GitHub mirror (a PAT with write access to scoop-bucket —
-the tap PAT works if it can write there); until then the bucket step warns and the
-manifest is in the step summary. Not exercised on a real Windows machine —
+The `SCOOP_BUCKET_TOKEN` secret is set on the GitHub mirror (2026-09-29) and
+v0.2.0 exercised the bucket push end to end (see below). Not exercised on
+a real Windows machine —
 `scoop install glute` from the bucket is the first thing to try there. Windows on
 ARM is deliberately not offered (no `windows/arm64` in PLATFORMS).
+
+As of 2026-09-29 (later, committed to `main`): **v0.2.0 released** — the first
+tag through the whole chain, all green. GitLab pipeline 234929 (test → build →
+release) published the GitLab release; the mirror carried the tag in ~5 min
+(the plain `main` push before it propagated in ~15s — the throttle bites on
+tags, not always on commits); GitHub `release` run 36624526869 created the
+release with provenance and pushed `Formula/glute.rb` 0.2.0 to the tap and
+`bucket/glute.json` 0.2.0 to the bucket via `packaging/push-to-repo.sh`, both
+verified against the release's SHA256SUMS (and the bucket URL re-downloaded and
+re-hashed). Also in 0.2.0 (`25f32ea`): **running is DodgerBlue** (queued states
+stay yellow) and **both Current panels lead with a pipeline ID column** — the
+instance-wide `Pipeline.ID`; per-project `IID` is the one-field swap if the team
+turns out to quote that number instead. Job rows show no id on purpose.
