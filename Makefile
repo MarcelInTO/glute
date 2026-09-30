@@ -9,6 +9,8 @@
 #   make fmt        gofmt all sources
 #   make fmt-check  fail if anything needs gofmt
 #   make smoke      build and run the binary's headless self-checks
+#   make drive-all  play every TUI scenario against the real binary in a pty
+#   make drive SCENARIO=tools/ptydrive/scenarios/<name>.txt   play one, showing it
 #   make dist       stage release archives + SHA256SUMS in dist/
 #   make verify-dist  unpack this host's archive and self-check it
 #   make formula    generate the Homebrew formula from dist/SHA256SUMS
@@ -126,6 +128,36 @@ smoke: build ## Build and run the binary's headless self-checks
 	@$(BIN_DIR)/$(BINARY) version
 	@$(BIN_DIR)/$(BINARY) refresh --sample > /dev/null
 	@echo "  smoke ok"
+
+# Driving the real TUI. Unit tests call onKey/onMouse directly, which skips
+# tview's own event dispatch — how a click is built from a press and a release
+# (with a move ahead of them, sharing one event), which widget a key reaches,
+# what the terminal is actually sent — and bugs live exactly there.
+# tools/ptydrive plays a scenario (keys, clicks, and what the screen must then
+# show) against `bin/glute --sample` in a pseudo-terminal; the scenarios under
+# tools/ptydrive/scenarios/ double as a record of how the key flows behave. The
+# terminal emulator it reads the screen through (pyte) lives in a venv under
+# .cache/, made on first use (needs python3 and network once). Local only: it
+# needs a pty, so Unix, and isn't part of `make check`.
+PTY_VENV   := .cache/ptydrive-venv
+PTY_PYTHON := $(PTY_VENV)/bin/python
+PTYDRIVE   := tools/ptydrive/ptydrive.py
+SCENARIOS   = $(wildcard tools/ptydrive/scenarios/*.txt)
+
+$(PTY_PYTHON):
+	python3 -m venv $(PTY_VENV)
+	$(PTY_VENV)/bin/pip install -q 'pyte==0.8.2'
+
+.PHONY: drive
+drive: build $(PTY_PYTHON) ## Play one TUI scenario in a pty, printing its `show` steps (SCENARIO=...)
+	@test -n "$(SCENARIO)" || { echo "usage: make drive SCENARIO=tools/ptydrive/scenarios/<name>.txt"; exit 2; }
+	@$(PTY_PYTHON) $(PTYDRIVE) $(SCENARIO) -- $(BIN_DIR)/$(BINARY) --sample
+
+.PHONY: drive-all
+drive-all: build $(PTY_PYTHON) ## Play every TUI scenario against the real binary in a pty
+	@fail=0; for s in $(SCENARIOS); do \
+		$(PTY_PYTHON) $(PTYDRIVE) -q "$$s" -- $(BIN_DIR)/$(BINARY) --sample || fail=1; \
+	done; exit $$fail
 
 .PHONY: dist
 dist: ## Stage release archives + SHA256SUMS in dist/ (VERSION=v1.2.3 to stamp)

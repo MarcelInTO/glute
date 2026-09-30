@@ -1,0 +1,14 @@
+# Pipeline ids over SSH: a browser glute launched would open on the wrong
+# machine, so it launches nothing and shows the URL, pointing at the id's
+# terminal hyperlink instead.
+env SSH_CONNECTION=10.0.0.1 50000 10.0.0.2 22
+opener
+
+click 2 23
+expect-not-opened
+expect https://gitlab.example.com/acme/platform/gateway/-/pipelines/97
+expect over SSH
+key o
+expect-not-opened
+key q
+expect-exit

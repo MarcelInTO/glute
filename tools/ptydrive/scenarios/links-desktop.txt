@@ -1,0 +1,31 @@
+# Pipeline ids as GitLab links, on a desktop: glute launches the browser
+# itself. Pinned to the desktop case whatever machine this runs on.
+unset SSH_CONNECTION
+unset SSH_CLIENT
+unset SSH_TTY
+env DISPLAY=:99
+opener
+
+# Every pipeline id is a terminal hyperlink (OSC 8) to its page.
+expect-raw \x1b]8;;https://gitlab.example.com/acme/payments/api/-/pipelines/101\x1b\\
+expect-raw \x1b]8;;https://gitlab.example.com/acme/platform/gateway/-/pipelines/97\x1b\\
+
+# A plain click on #97's id opens it in the browser, not the detail view, and
+# the opener's own output never reaches the screen.
+click 2 23
+expect-opened /acme/platform/gateway/-/pipelines/97
+expect opened in your browser
+expect-not Pipeline #97
+expect-not stand-in opener
+
+# o on a job row in the tree opens the job's own page.
+key f down o
+expect-opened /acme/payments/api/-/jobs/5111
+
+# o in the detail view, on a job row, likewise.
+key f enter
+expect Pipeline #98
+key down o
+expect-opened /acme/payments/api/-/jobs/9801
+key esc q
+expect-exit

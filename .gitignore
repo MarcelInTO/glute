@@ -9,5 +9,8 @@
 # Local logs
 *.log
 
+# Local tool caches (the ptydrive venv; see the Makefile's `drive` targets)
+/.cache/
+
 # Claude Code machine-local settings
 .claude/settings.local.json

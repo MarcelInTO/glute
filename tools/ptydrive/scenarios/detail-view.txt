@@ -1,0 +1,46 @@
+# The finished-pipeline detail view, opened and closed every way a user would,
+# against `glute --sample` at 120x30. There the finished panel's rows are 22-24
+# (#98, #97, #96) and the view is inset 10 columns and 3 rows.
+
+# Keyboard: f to the finished list, down to #97, Enter opens it.
+key f down enter
+expect Pipeline #97 · gateway · feat/rate-limit
+expect deploy-staging
+expect smoke-test
+expect Esc/q close
+expect TIMELINE
+show
+
+# q closes the view rather than quitting, and hands back the finished list.
+key q
+expect-not Pipeline #97
+expect Enter or click opens
+
+# A click on a row (on its project, not its id) opens that pipeline.
+click 10 24
+expect Pipeline #96 · web · main
+
+# The wheel over the margin must not reach the tab beneath (the view stays up);
+# a click in the margin closes it. tview sends the move ahead of the press in
+# one shared event, which is what once swallowed this click.
+wheel 3 22 down
+expect Pipeline #96
+click 3 10
+expect-not Pipeline #96
+expect Enter or click opens
+
+# Opened again, Esc closes it too; after the help overlay, focus is still on
+# the finished list, so Enter opens its selected row.
+key enter
+expect Pipeline #96
+key esc
+expect-not Pipeline #96
+key ? esc enter
+expect Pipeline #96
+key esc
+
+# f hands the keyboard back to the tree, and q quits from the tab.
+key f
+expect f to select
+key q
+expect-exit
