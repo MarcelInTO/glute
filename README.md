@@ -18,9 +18,17 @@ Read-only. Cross-platform (Linux, macOS, Windows).
 - `glute version`
 
 Keys in the dashboard: `Tab`/`Shift-Tab` or `1`/`2`/`3` switch tabs, `↑`/`↓`
-scroll the Current tree, `t` cycles the history window (1d / 7d / 30d) that
-every Work and Infrastructure panel aggregates over, `r` refreshes, `?` shows
-help, `q` quits.
+scroll the Current tree, `f` moves between the tree and the recently finished
+pipelines below it, `Enter` (or a click) on a finished pipeline opens its jobs
+with a timeline of where the time went (`Esc` or `q` closes it), `o` (or a
+click on a pipeline id) opens the selected pipeline, or job, in GitLab in your
+browser, `t` cycles the history window (1d / 7d / 30d) that every Work and
+Infrastructure panel aggregates over, `r` refreshes, `?` shows help, `q` quits.
+
+Pipeline ids are also terminal hyperlinks. Over SSH, where glute can't open a
+browser on your machine, Cmd- or Ctrl-click one (adding Shift if your terminal
+needs it) and your terminal opens it locally. Inside tmux, turn them on with
+`set -as terminal-features ",*:hyperlinks"` (tmux 3.4 or later).
 
 ## Install
 
