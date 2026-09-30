@@ -270,7 +270,13 @@ Keep it CGO-free so cross-compilation stays trivial.
   way on small screens), so the tab shows all round it and it reads as a panel
   over the tab, not a new screen. A Flex can't express a margin that scales
   with a floor, so a small `insetView` lays it out and, like a Flex, clears
-  nothing. **Mouse handling while it's open** (`onMouse`) has two traps, both
+  nothing. The panel has its own background (`detailBackground`, #262626),
+  chosen from a rendered colour preview against #1c1c1c (the step from black
+  barely showed) and #303030 (palette green `success` text started to fade).
+  It degrades to plain black on a 16-colour terminal. Table cells are
+  transparent, so they sit on the table's fill. The TextViews and the frame
+  (whose Flex paints only its border and title row) need it set explicitly, or
+  they leave black patches. **Mouse handling while it's open** (`onMouse`) has two traps, both
   from how tview dispatches one terminal event. (1) A move is sent ahead of the
   press or release, sharing one event, so swallowing the move (returning nil)
   silently drops the press after it. Moves outside the panel must always pass;

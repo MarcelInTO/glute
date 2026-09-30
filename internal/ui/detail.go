@@ -57,6 +57,15 @@ const (
 // the timeline this much — or half the room, if even that is more.
 const minTimelineWidth = 30
 
+// detailBackground is the modal's own background: a charcoal a step up from a
+// dark terminal's black, so the panel stands apart from the tab behind it.
+// It's kept that dark so everything drawn on it stays legible — the palette
+// green of "success" is the weakest, and is still clear on this. As a 256-
+// colour value it degrades to plain black on a 16-colour terminal, i.e. to
+// how the panel looked before, rather than to something garish. The selection
+// highlight (DarkSlateGray) still stands out against it.
+var detailBackground = tcell.NewRGBColor(0x26, 0x26, 0x26)
+
 // detailLegend explains the timeline's glyphs and, last, how to close the
 // view: the footer says so too, but a hint outside the panel is easy to miss.
 const detailLegend = "[silver]░[-] queued  [white]█[-] ran  [white]━[-] pipeline    [aqua]Esc[-]/[aqua]q[-] close "
@@ -118,17 +127,24 @@ func newDetailView(aliases map[string]string) *detailView {
 	t.SetSelectable(true, false)
 	t.SetSelectedStyle(tcell.StyleDefault.Background(tcell.ColorDarkSlateGray).Foreground(tcell.ColorWhite))
 
+	t.SetBackgroundColor(detailBackground) // cells are transparent, so they sit on this
+
 	info := tview.NewTextView()
 	info.SetDynamicColors(true)
+	info.SetBackgroundColor(detailBackground) // also the text's own background
 	legend := tview.NewTextView()
 	legend.SetDynamicColors(true)
+	legend.SetBackgroundColor(detailBackground)
 	legend.SetTextAlign(tview.AlignRight)
 	legend.SetText(detailLegend)
 	bottom := tview.NewFlex()
 	bottom.AddItem(info, 0, 1, false)
 	bottom.AddItem(legend, tview.TaggedStringWidth(detailLegend), 0, false)
 
+	// A Flex paints no background of its own (its children above do); this
+	// colours the border and title row to match.
 	frame := tview.NewFlex().SetDirection(tview.FlexRow)
+	frame.SetBackgroundColor(detailBackground)
 	frame.SetBorder(true)
 	frame.SetTitleAlign(tview.AlignLeft)
 	frame.AddItem(t, 0, 1, true)

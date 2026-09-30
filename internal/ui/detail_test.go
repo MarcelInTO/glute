@@ -450,3 +450,46 @@ func TestFinishedHoverFollowsScroll(t *testing.T) {
 		t.Errorf("hover on the first visible row = %q, want %q (offset %d)", path, want, off)
 	}
 }
+
+// TestDetailViewHasItsOwnBackground checks the modal is painted in its own
+// background everywhere inside the frame — blank space, text cells (which must
+// keep the panel's colour, not punch holes to the terminal's), the title row
+// and the bottom line — while the margin around it keeps the tab's.
+func TestDetailViewHasItsOwnBackground(t *testing.T) {
+	d, trees := newTreeDashboard()
+	p := d.snapshot.RecentPipelines[1]
+	d.openDetail(p)
+	d.detail.show(trees[p.ID], nil)
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(120, 30)
+	d.outer.SetRect(0, 0, 120, 30)
+	d.outer.Draw(screen)
+
+	bgAt := func(x, y int) tcell.Color {
+		_, _, style, _ := screen.GetContent(x, y)
+		_, bg, _ := style.Decompose()
+		return bg
+	}
+	fx, fy, fw, fh := d.detail.frame.GetRect()
+	sx, sy, _, _ := d.detail.table.GetInnerRect()
+	for _, pt := range []struct {
+		name string
+		x, y int
+	}{
+		{"the title row", fx + 5, fy},
+		{"a header cell", sx + 1, sy},
+		{"a status cell (row 2; row 1 is selected)", sx + 30, sy + 2},
+		{"blank space below the rows", fx + fw/2, fy + fh - 4},
+		{"the bottom line", fx + 3, fy + fh - 2},
+	} {
+		if got := bgAt(pt.x, pt.y); got != detailBackground {
+			t.Errorf("%s at (%d,%d): background %v, want the panel's %v", pt.name, pt.x, pt.y, got, detailBackground)
+		}
+	}
+	if got := bgAt(fx-2, fy+5); got == detailBackground {
+		t.Error("the margin outside the frame took the panel's background; the tab should show there")
+	}
+}
