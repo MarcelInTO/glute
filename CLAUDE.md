@@ -44,6 +44,19 @@ Keep it CGO-free so cross-compilation stays trivial.
   on the `Service` interface (fake + `SampleSnapshot` for tests). The Snapshot
   carries the history aggregates at *every* selectable window (`Windows`, see the
   `t` key below), so a window change is a UI-only re-render, never a fetch.
+  **One exception: `Service.PipelineTree`**, the on-demand fetch behind the
+  finished-pipeline detail view (see the TUI notes). The retained store can't
+  rebuild a finished tree: parent→child edges exist only for pipelines glute
+  watched while they ran (so, just after startup, most of the finished panel
+  would come up with its children missing), `jobFetchScopes` omits the skipped,
+  canceled and manual jobs a failed run leaves behind, and bulk jobs have no
+  `needs:`. `walkPipelineTree` (`tree.go`) instead issues one GraphQL query per
+  pipeline in the tree, a level at a time, with no scope filter. Measured on the
+  real instance at ~0.5–0.7s for a two-level tree. A tree whose every pipeline
+  has finished is immutable, so the Poller caches it (`trees`, under its own
+  `treeMu`, since the call runs concurrently with `Refresh`; pruned with the
+  store). A finished root with a still-running child isn't cached. The walk
+  fails as a whole on any fetch error rather than show a tree missing a child.
 - **Incremental retained store (the `Poller`), not a full fetch per refresh.**
   The Poller keeps an in-memory store of the pipelines and jobs within the Top
   window and updates it incrementally: each refresh fetches only pipelines
@@ -112,6 +125,16 @@ Keep it CGO-free so cross-compilation stays trivial.
   — `parseGID` extracts the int; pipelines are looked up by `(project, iid)`, so
   `Pipeline.IID` is populated. GraphQL status enums are UPPERCASE — lowercased to
   match our `Status` constants.
+- **GraphQL `pipeline.jobs` returns retried attempts too** (verified on the
+  instance: tlp-sz!438, a `SUCCESS` pipeline, lists two `FAILED` attempts of a
+  job that later passed, plus retried *bridges* whose superseded child pipelines
+  still exist). The query fetches `retried`, and it is carried as `Job.Retried`
+  and `childRef.retried`. The store keeps retried attempts, since they consumed
+  runners and count for compute and failure stats. The detail view drops them
+  and the children of retried bridges, as GitLab's own pipeline view does, so a
+  passed pipeline doesn't list a flaky job as failed. The Current tree does
+  **not** filter them yet, so a retried job shows twice there. REST sets no
+  `Retried`.
 - **Child pipelines** (dynamically-generated, `source=parent_pipeline`) do NOT
   appear in the project pipeline list, and a parent's own jobs are just the
   bridge/trigger job. On the warm path the GraphQL query returns each **BRIDGE**
@@ -230,6 +253,45 @@ Keep it CGO-free so cross-compilation stays trivial.
   to a short display label; the remap is display-only (applied in the UI via
   `Options.RunnerAliases` → `currentView.displayRunner`), so the data layer keeps
   the true name. Unlisted runners show their real name.
+- **The finished-pipeline detail view** (`detail.go`) opens over the Current tab
+  when a finished row is chosen, by `f` (focus the finished list), ↑/↓ and Enter,
+  or by a click on the row. Esc, `q` (which closes it rather than quitting) or a
+  click outside closes it. It exists for two questions about a finished run:
+  which jobs failed, and where the time went. So it lays out the tree the way the
+  active tree does (`flattenActive`, the shared `treeBuilder`, the same job
+  order) and swaps the live columns for QUEUED (the runner wait, `Job.Queued`),
+  START (offset from the root's creation), TIME, and a per-row **timeline bar**.
+  In a DAG pipeline the durations don't add up to the wall-clock time, and the
+  bars show what overlapped and which chain the run waited on. The axis starts
+  at the root's `Created` and runs to the latest finish anywhere in the tree (a
+  child can outlive its root). A job draws `░` for its queue, then `█` for its
+  run in the status color. A pipeline draws `─` for created→started, then `━`,
+  so it reads as a bracket over its jobs. Every row that ran gets at least one
+  cell. TIME is GitLab's `duration` (which excludes gaps), while the bar is wall
+  clock, so they can differ. The bars are rendered in the table's draw hook at
+  the real width: the name column keeps its natural width if the timeline still
+  gets `minTimelineWidth`, and is elided otherwise. The durations drop HMS's
+  blank padding, which only exists to stop ticking timers jittering, and show a
+  zero as `0`, not `—`. The fetch runs off the UI goroutine. `detailSeq` drops a
+  result whose view was closed or replaced meanwhile. Known gap: a pipeline with
+  a job retried days later spans days, and its real work collapses into a
+  column or two (seen on tlp-sz!438: 95h axis, 48-minute child). Compressing
+  idle gaps would fix it, but isn't built.
+- **Which Current panel owns the keyboard** (`currentView.finishedActive`) is
+  set only by intent: the `f` key, or a mouse press on a panel. It is never set
+  from focus events, because tview moves focus incidentally too.
+  `Pages.HidePage` re-focuses the page's default item (the tree), so closing the
+  help or the detail view would otherwise forget the user was on the finished
+  list. Only the focused panel is selectable, because selectability is the
+  highlight switch: tview highlights a selected row whether or not its table has
+  focus, so otherwise nothing shows where ↑/↓ will go. A refresh keeps the
+  finished selection on the same **pipeline ID**, not row index, since newly
+  finished runs push in on top and Enter would otherwise open a different
+  pipeline. While the panel has the keyboard its scroll offset shifts with the
+  selection, and otherwise it stays pinned to the top. Its key hint sits in the
+  panel title and changes with focus, because the footer line is already full at
+  common widths. Because the list now scrolls, its hover reveal goes through
+  `Table.CellAt`, which counts the scroll offset (`panelTable.rowAt`).
 - The Current table is *selectable* (so it scrolls with ↑/↓); it reveals the
   selected row's full project path in the footer via `SetSelectionChangedFunc`,
   because the mouse-hover reveal below assumes fixed, non-scrolling row math and

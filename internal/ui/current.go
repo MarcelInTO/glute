@@ -23,8 +23,15 @@ import (
 // The finished panel keeps a just-completed pipeline visible with its outcome
 // after it drops out of the tree above — otherwise a pipeline you were watching
 // simply vanishes the moment it finishes and you have to leave the tab to learn
-// whether it passed. It's a plain non-scrolling panel (newest first), so the
-// most recent completions sit at the top and older ones clip off the bottom.
+// whether it passed. It lists newest first, so the most recent completions sit
+// at the top and older ones clip off the bottom. It's also the way into the
+// detail view (detail.go): its rows are selectable once it has focus (the `f`
+// key, or a click), and Enter or a click opens the selected pipeline's tree.
+//
+// Only one of the two panels takes the arrow keys at a time, and only that one
+// shows its selection highlight — tview highlights a selected row whether or
+// not its table has focus, so otherwise both would, and nothing on screen would
+// say which one ↑/↓ is about to move.
 type currentView struct {
 	root     *tview.Flex
 	table    *tview.Table
@@ -32,6 +39,15 @@ type currentView struct {
 	paths    []string          // full project path per data row, indexed by (tableRow - 1)
 	rows     []curRow          // last-rendered rows, so tick can re-time the live ones
 	aliases  map[string]string // runner full name → short display label
+
+	finishedPipes []gitlab.Pipeline // the finished panel's rows, indexed by (tableRow - 1)
+	// finishedActive says which panel owns the keyboard while the tab is shown:
+	// the finished list (true) or the tree. Only the user's intent sets it — the
+	// f key, or a mouse press on either panel — never a focus change as such:
+	// tview moves focus incidentally too (hiding an overlay page re-focuses the
+	// page's default item, the tree), and following that would forget, each
+	// time the help or the detail view closed, that the user was on the list.
+	finishedActive bool
 }
 
 func newCurrentView(aliases map[string]string) *currentView {
@@ -49,14 +65,124 @@ func newCurrentView(aliases map[string]string) *currentView {
 
 	// ID leads (see fillFinishedPipelines); PROJECT and REF together identify
 	// the run, so those two flex.
-	finished := newPanelTable("Recently finished pipelines · newest first", 1, 2)
+	finished := newPanelTable(finishedTitle(false), 1, 2)
+	finished.table.SetSelectedStyle(tcell.StyleDefault.Background(tcell.ColorDarkSlateGray).Foreground(tcell.ColorWhite))
 
-	// 2:1 split puts the finished panel at about the bottom third; the tree keeps
-	// focus so the arrow keys still scroll it.
+	// 2:1 split puts the finished panel at about the bottom third; the tree
+	// starts with focus so the arrow keys scroll it.
 	root := tview.NewFlex().SetDirection(tview.FlexRow)
 	root.AddItem(t, 0, 2, true)
 	root.AddItem(finished.table, 0, 1, false)
-	return &currentView{root: root, table: t, finished: finished, aliases: aliases}
+	v := &currentView{root: root, table: t, finished: finished, aliases: aliases}
+
+	// Selectability is the highlight switch (see the type comment): a panel is
+	// selectable only while it has focus. Its selected row is kept either way,
+	// so focus coming back lands where it left.
+	t.SetFocusFunc(func() { t.SetSelectable(true, false) })
+	t.SetBlurFunc(func() { t.SetSelectable(false, false) })
+	f := finished.table
+	f.SetFocusFunc(func() {
+		finished.setTitle(finishedTitle(true))
+		f.SetSelectable(true, false)
+		// Re-select to clamp the view to the selection: while unfocused the
+		// panel is pinned to the top on each refresh, which may have left the
+		// selected row below the fold.
+		row, _ := f.GetSelection()
+		f.Select(max(row, 1), 0)
+	})
+	f.SetBlurFunc(func() {
+		finished.setTitle(finishedTitle(false))
+		f.SetSelectable(false, false)
+	})
+	return v
+}
+
+// finishedTitle is the finished panel's title, ending in the key hint for what
+// the panel does from where the user is: how to get into it, or, once in, how
+// to open a pipeline and get back. The hint lives here rather than in the
+// footer, whose line is already full at common widths, and where it says what
+// it applies to.
+func finishedTitle(focused bool) string {
+	const base = "Recently finished pipelines · newest first"
+	if focused {
+		return base + " · Enter or click opens · f back"
+	}
+	return base + " · f to select"
+}
+
+// focusTarget is the panel that should hold keyboard focus when the Current
+// tab is shown.
+func (v *currentView) focusTarget() tview.Primitive {
+	if v.finishedActive {
+		return v.finished.table
+	}
+	return v.table
+}
+
+// toggleFocusTarget flips which Current panel owns the keyboard, returning the
+// panel that now should have focus. With nothing finished to select, the tree
+// keeps it.
+func (v *currentView) toggleFocusTarget() tview.Primitive {
+	if !v.finishedActive && len(v.finishedPipes) == 0 {
+		return v.table
+	}
+	v.finishedActive = !v.finishedActive
+	return v.focusTarget()
+}
+
+// pressAt records a mouse press at (x, y) as the user choosing a panel: the
+// one under the cursor becomes the one that owns the keyboard (tview then gives
+// it focus). A press elsewhere changes nothing.
+func (v *currentView) pressAt(x, y int) {
+	switch {
+	case v.finished.table.InRect(x, y):
+		v.finishedActive = true
+	case v.table.InRect(x, y):
+		v.finishedActive = false
+	}
+}
+
+// finishedAt returns the pipeline on a finished-panel table row (1-based;
+// the header is row 0).
+func (v *currentView) finishedAt(row int) (gitlab.Pipeline, bool) {
+	idx := row - 1
+	if idx < 0 || idx >= len(v.finishedPipes) {
+		return gitlab.Pipeline{}, false
+	}
+	return v.finishedPipes[idx], true
+}
+
+// updateFinished refills the finished panel, keeping the selection on the same
+// pipeline rather than the same row: each refresh can push newly finished
+// pipelines in on top, and a selection left on the row index would slide onto
+// a different pipeline under the user's cursor — the one Enter then opens.
+// While the panel has the keyboard its scroll offset moves with the selected
+// row too, so the list doesn't jump; otherwise it stays pinned to the top.
+func (v *currentView) updateFinished(pipes []gitlab.Pipeline) {
+	f := v.finished.table
+	prevRow, _ := f.GetSelection()
+	prevOffset, _ := f.GetOffset()
+	prev, hadPrev := v.finishedAt(prevRow)
+
+	fillFinishedPipelines(v.finished, pipes)
+	v.finishedPipes = pipes
+	if len(pipes) == 0 {
+		return
+	}
+
+	row := min(max(prevRow, 1), len(pipes)) // the pipeline aged out: stay near where it was
+	if hadPrev {
+		for i, p := range pipes {
+			if p.ID == prev.ID {
+				row = i + 1
+				break
+			}
+		}
+	}
+	if v.finishedActive && hadPrev {
+		f.SetOffset(max(prevOffset+row-prevRow, 0), 0)
+	}
+	f.Select(row, 0)
 }
 
 // displayRunner maps a runner's full name to its configured short label, or
@@ -80,7 +206,9 @@ type curRow struct {
 	runner   string        // job's runner (empty for pipeline rows / unassigned jobs)
 	started  time.Time     // for the live TIME column (running rows)
 	created  time.Time     // fallback start when Started is unknown
+	finished time.Time     // when the row finished (zero while live); the detail timeline's bar end
 	duration time.Duration // total duration, for finished rows
+	queued   time.Duration // job's wait for a runner (job rows only), for the detail view
 	progress string
 	path     string // full project path, for the footer reveal
 }
@@ -99,7 +227,7 @@ func (r curRow) when() string {
 }
 
 func (v *currentView) update(s gitlab.Snapshot) {
-	fillFinishedPipelines(v.finished, s.RecentPipelines)
+	v.updateFinished(s.RecentPipelines)
 
 	t := v.table
 	t.Clear()
@@ -203,6 +331,7 @@ func flattenActive(aps []gitlab.ActivePipeline) []curRow {
 			user:     ap.User,
 			started:  ap.Started,
 			created:  ap.Created,
+			finished: ap.Finished,
 			duration: ap.Duration,
 			progress: progress,
 			path:     ap.ProjectPath,
@@ -215,7 +344,9 @@ func flattenActive(aps []gitlab.ActivePipeline) []curRow {
 				runner:   j.Runner,
 				started:  j.Started,
 				created:  j.Created,
+				finished: j.Finished,
 				duration: j.Duration,
+				queued:   j.Queued,
 				path:     ap.ProjectPath,
 			})
 		}

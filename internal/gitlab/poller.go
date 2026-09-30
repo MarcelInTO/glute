@@ -90,6 +90,12 @@ type Poller struct {
 
 	statsMu sync.Mutex
 	stats   RefreshStats // cumulative per-phase timing across refreshes
+
+	// Finished-pipeline trees fetched on demand for the detail view (see
+	// tree.go), keyed by root pipeline id. PipelineTree runs concurrently with
+	// Refresh, hence the lock — unlike the store above.
+	treeMu sync.Mutex
+	trees  map[int64]ActivePipeline
 }
 
 // RefreshStats reports the cumulative time each Refresh phase has cost across a
@@ -131,6 +137,7 @@ func NewPoller(client *Client, specs []ProductSpec, opts PollOptions) *Poller {
 		pending:     map[int64]bool{},
 		childPipes:  map[int64]Pipeline{},
 		childParent: map[int64]int64{},
+		trees:       map[int64]ActivePipeline{},
 	}
 }
 
@@ -229,6 +236,7 @@ func (p *Poller) Refresh(ctx context.Context) (Snapshot, error) {
 
 	// 7. Age out anything now beyond the Top window, then advance watermarks.
 	p.evict(windowStart)
+	p.pruneTrees()
 	p.pipeWatermark = fetchStart
 	if fullResync {
 		p.lastResync = now

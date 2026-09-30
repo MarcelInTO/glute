@@ -85,6 +85,7 @@ type Job struct {
 	Runner        string   // the runner the job ran on (its description, else name)
 	Tags          []string // runner tags the job was invoked with (tags:), empty if none
 	Needs         []string // names of the jobs this job depends on (needs:), empty if none/unknown
+	Retried       bool     // a superseded attempt: retried, and a later run replaced it (GraphQL path only)
 	Created       time.Time
 	Started       time.Time
 	Finished      time.Time

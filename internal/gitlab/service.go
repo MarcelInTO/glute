@@ -11,6 +11,12 @@ import (
 // live GitLab instance.
 type Service interface {
 	Refresh(ctx context.Context) (Snapshot, error)
+	// PipelineTree returns one pipeline's full tree — its jobs and downstream
+	// child pipelines, recursively — for the finished-pipeline detail view. It
+	// is the one thing not served from a Snapshot: it's fetched on demand (see
+	// tree.go for why the retained store can't supply it), and it may be called
+	// concurrently with Refresh.
+	PipelineTree(ctx context.Context, root Pipeline) (ActivePipeline, error)
 }
 
 var (
@@ -22,11 +28,25 @@ var (
 type FakeService struct {
 	Snap Snapshot
 	Err  error
+	// Trees are the canned PipelineTree answers, keyed by root pipeline id.
+	Trees map[int64]ActivePipeline
 }
 
 // Refresh returns the canned snapshot and error.
 func (f FakeService) Refresh(context.Context) (Snapshot, error) {
 	return f.Snap, f.Err
+}
+
+// PipelineTree returns the canned tree for root, or failing that the canned
+// error, or else root alone — a pipeline with no jobs to show.
+func (f FakeService) PipelineTree(_ context.Context, root Pipeline) (ActivePipeline, error) {
+	if t, ok := f.Trees[root.ID]; ok {
+		return t, nil
+	}
+	if f.Err != nil {
+		return ActivePipeline{}, f.Err
+	}
+	return ActivePipeline{Pipeline: root}, nil
 }
 
 // SampleSnapshot returns realistic fixture data anchored to the current time,
@@ -207,6 +227,67 @@ func SampleSnapshot() Snapshot {
 		},
 		UpdatedAt: now,
 	}
+}
+
+// SampleTrees returns the detail view's tree for each of s's recent (finished)
+// sample pipelines: jobs timed so the timeline reads true — parallel jobs
+// overlapping, queue waits, jobs that never ran — with a downstream child
+// pipeline under one and a failure with a skipped job behind it in another.
+// Times are anchored to each pipeline's own Finished and Duration, so the tree
+// agrees with the finished panel. Sample data only.
+func SampleTrees(s Snapshot) map[int64]ActivePipeline {
+	ms := func(m, sec int) time.Duration { return time.Duration(m)*time.Minute + time.Duration(sec)*time.Second }
+	trees := map[int64]ActivePipeline{}
+	for _, p := range s.RecentPipelines {
+		start := p.Finished.Add(-p.Duration)
+		p.Started, p.Created = start, start.Add(-12*time.Second) // time to the first runner pickup
+		// job builds one of p's own jobs, run from offset from (into the
+		// pipeline) for dur; a negative from is a job that never ran.
+		job := func(id int64, stage, name string, st Status, runner string, queued, from, dur time.Duration, needs ...string) Job {
+			j := Job{ID: id, Name: name, Stage: stage, Status: st, ProjectPath: p.ProjectPath, Ref: p.Ref,
+				PipelineID: p.ID, Runner: runner, Needs: needs, Created: p.Created}
+			if from >= 0 {
+				j.Queued, j.Started, j.Finished, j.Duration = queued, start.Add(from), start.Add(from+dur), dur
+			}
+			return j
+		}
+
+		tree := ActivePipeline{Pipeline: p}
+		switch p.ID {
+		case 98: // acme/payments/api · main · success: a needs: DAG plus a deploy child
+			tree.Jobs = sortPipelineJobs([]Job{
+				job(9801, "build", "compile", StatusSuccess, "shared-linux-01", ms(0, 4), 0, ms(1, 10)),
+				job(9802, "test", "lint", StatusSuccess, "shared-linux-02", ms(0, 3), ms(0, 2), ms(0, 35)),
+				job(9803, "test", "unit-tests", StatusSuccess, "shared-linux-02", ms(0, 6), ms(1, 16), ms(2, 5), "compile"),
+				job(9804, "test", "integration-tests", StatusSuccess, "shared-linux-01", ms(0, 8), ms(1, 18), ms(3, 40), "compile"),
+			})
+			child := Pipeline{ID: 202, ProjectPath: "acme/payments/deploy", Ref: "main", Status: StatusSuccess,
+				Source: sourceParentPipeline, User: p.User, Created: start.Add(ms(5, 0)), Started: start.Add(ms(5, 3)),
+				Finished: p.Finished, Duration: ms(0, 37)}
+			tree.Children = []ActivePipeline{{
+				Pipeline: child,
+				Jobs: []Job{{ID: 9901, Name: "deploy-staging", Stage: "deploy", Status: StatusSuccess,
+					ProjectPath: child.ProjectPath, Ref: child.Ref, PipelineID: child.ID, Runner: "shared-linux-01",
+					Created: child.Created, Queued: ms(0, 3), Started: child.Started, Finished: child.Finished, Duration: ms(0, 37)}},
+			}}
+		case 97: // acme/platform/gateway · feat/rate-limit · failed: stage order, a skipped job behind the failure
+			tree.Jobs = sortPipelineJobs([]Job{
+				job(9701, "build", "build", StatusSuccess, "docker-builder", ms(0, 5), 0, ms(1, 5)),
+				job(9702, "test", "unit-tests", StatusSuccess, "shared-linux-01", ms(0, 2), ms(1, 7), ms(0, 52)),
+				job(9703, "test", "contract-tests", StatusSuccess, "shared-linux-02", ms(0, 20), ms(1, 27), ms(0, 40)),
+				job(9704, "deploy", "deploy-staging", StatusFailed, "shared-linux-01", ms(0, 4), ms(2, 28), ms(0, 44)),
+				job(9705, "deploy", "smoke-test", StatusSkipped, "", 0, -1, 0),
+			})
+		case 96: // acme/payments/web · main · success: a long queue wait, and a manual job never played
+			tree.Jobs = sortPipelineJobs([]Job{
+				job(9601, "build", "build", StatusSuccess, "docker-builder", ms(0, 12), 0, ms(4, 10)),
+				job(9602, "test", "e2e", StatusSuccess, "shared-linux-02", ms(0, 5), ms(4, 17), ms(2, 43)),
+				job(9603, "deploy", "deploy-prod", StatusManual, "", 0, -1, 0),
+			})
+		}
+		trees[p.ID] = tree
+	}
+	return trees
 }
 
 // scaleWindowStats derives sample history for a shorter window from the full

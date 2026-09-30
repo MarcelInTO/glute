@@ -115,46 +115,67 @@ func topPipelines(pipes []Pipeline, limit int) []PipelineAgg {
 // ordered as the UI shows them (see sortPipelineJobs). Children are ordered by
 // start time. A visited set guards against a malformed edge cycle.
 func activePipelines(roots []Pipeline, jobs []Job, childPipes map[int64]Pipeline, childParent map[int64]int64) []ActivePipeline {
-	jobsByPipe := map[int64][]Job{}
-	for _, j := range jobs {
-		jobsByPipe[j.PipelineID] = append(jobsByPipe[j.PipelineID], j)
-	}
-	kids := map[int64][]int64{}
-	for child, parent := range childParent {
-		kids[parent] = append(kids[parent], child)
-	}
-
-	seen := map[int64]bool{}
-	var build func(pi Pipeline) ActivePipeline
-	build = func(pi Pipeline) ActivePipeline {
-		seen[pi.ID] = true
-		node := ActivePipeline{Pipeline: pi, Jobs: sortPipelineJobs(jobsByPipe[pi.ID])}
-		childIDs := append([]int64(nil), kids[pi.ID]...)
-		sort.Slice(childIDs, func(i, j int) bool {
-			ci, cj := childPipes[childIDs[i]], childPipes[childIDs[j]]
-			if !pipeStart(ci).Equal(pipeStart(cj)) {
-				return pipeStart(ci).Before(pipeStart(cj))
-			}
-			return childIDs[i] < childIDs[j]
-		})
-		for _, cid := range childIDs {
-			cp, ok := childPipes[cid]
-			if !ok || seen[cid] {
-				continue
-			}
-			node.Children = append(node.Children, build(cp))
-		}
-		return node
-	}
-
+	b := newTreeBuilder(jobs, childPipes, childParent)
 	var out []ActivePipeline
 	for _, pi := range roots {
 		if pi.Status.IsActive() {
-			out = append(out, build(pi))
+			out = append(out, b.build(pi))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return pipeStart(out[i].Pipeline).After(pipeStart(out[j].Pipeline)) })
 	return out
+}
+
+// treeBuilder assembles ActivePipeline trees from flat pieces: jobs (attached to
+// their pipeline by PipelineID), child pipeline metadata, and parent→child
+// edges. It's shared by the Current tab's live tree (activePipelines) and the
+// finished-pipeline detail view (walkPipelineTree), so both order a pipeline's
+// jobs and children the same way.
+type treeBuilder struct {
+	jobsByPipe map[int64][]Job
+	kids       map[int64][]int64
+	childPipes map[int64]Pipeline
+	seen       map[int64]bool
+}
+
+func newTreeBuilder(jobs []Job, childPipes map[int64]Pipeline, childParent map[int64]int64) *treeBuilder {
+	b := &treeBuilder{
+		jobsByPipe: map[int64][]Job{},
+		kids:       map[int64][]int64{},
+		childPipes: childPipes,
+		seen:       map[int64]bool{},
+	}
+	for _, j := range jobs {
+		b.jobsByPipe[j.PipelineID] = append(b.jobsByPipe[j.PipelineID], j)
+	}
+	for child, parent := range childParent {
+		b.kids[parent] = append(b.kids[parent], child)
+	}
+	return b
+}
+
+// build returns pi's node: its jobs in execution order (see sortPipelineJobs)
+// and its children, recursively, ordered by start time. The builder's seen set
+// guards against a malformed edge cycle.
+func (b *treeBuilder) build(pi Pipeline) ActivePipeline {
+	b.seen[pi.ID] = true
+	node := ActivePipeline{Pipeline: pi, Jobs: sortPipelineJobs(b.jobsByPipe[pi.ID])}
+	childIDs := append([]int64(nil), b.kids[pi.ID]...)
+	sort.Slice(childIDs, func(i, j int) bool {
+		ci, cj := b.childPipes[childIDs[i]], b.childPipes[childIDs[j]]
+		if !pipeStart(ci).Equal(pipeStart(cj)) {
+			return pipeStart(ci).Before(pipeStart(cj))
+		}
+		return childIDs[i] < childIDs[j]
+	})
+	for _, cid := range childIDs {
+		cp, ok := b.childPipes[cid]
+		if !ok || b.seen[cid] {
+			continue
+		}
+		node.Children = append(node.Children, b.build(cp))
+	}
+	return node
 }
 
 // sortPipelineJobs orders a pipeline's jobs the way they execute, matching the

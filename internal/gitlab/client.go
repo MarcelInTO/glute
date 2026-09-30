@@ -191,7 +191,9 @@ func scopeValues(scopes []Status) *[]glab.BuildStateValue {
 // pipelineJobsQuery fetches one pipeline's own fields plus its jobs — each with
 // its needs: dependencies, stage, runner, tags, and (for bridge jobs) the
 // downstream child pipeline it triggers. The jobs connection is paginated via
-// $cursor.
+// $cursor. It returns retried (superseded) attempts alongside the latest ones —
+// `retried` marks which is which — so the store sees every run that consumed a
+// runner, and a view that wants only the latest attempt filters on the flag.
 const pipelineJobsQuery = `query PipelineJobs($path: ID!, $iid: ID!, $cursor: String) {
   project(fullPath: $path) {
     pipeline(iid: $iid) {
@@ -210,6 +212,7 @@ const pipelineJobsQuery = `query PipelineJobs($path: ID!, $iid: ID!, $cursor: St
           name
           kind
           status
+          retried
           createdAt
           startedAt
           finishedAt
@@ -231,6 +234,7 @@ type gqlJobNode struct {
 	Name           string     `json:"name"`
 	Kind           string     `json:"kind"`
 	Status         string     `json:"status"`
+	Retried        bool       `json:"retried"`
 	CreatedAt      *time.Time `json:"createdAt"`
 	StartedAt      *time.Time `json:"startedAt"`
 	FinishedAt     *time.Time `json:"finishedAt"`
@@ -285,10 +289,14 @@ type gqlPipelineResp struct {
 }
 
 // childRef is a downstream child pipeline discovered while fetching a pipeline's
-// jobs — enough to fetch it in turn (its project path and iid).
+// jobs — enough to fetch it in turn (its project path and iid). retried marks a
+// child triggered by a bridge attempt that was later retried: a superseded
+// run, which the store still follows (its jobs used runners) but a view of the
+// pipeline as it finished leaves out.
 type childRef struct {
 	projectPath string
 	iid         int64
+	retried     bool
 }
 
 // FetchPipelineJobTree fetches, via GraphQL, one pipeline's own fields, its jobs
@@ -347,6 +355,7 @@ func collectPipelineNode(pn *gqlPipelineNode, projectPath string, scopeSet map[S
 			children = append(children, childRef{
 				projectPath: n.DownstreamPipeline.Project.FullPath,
 				iid:         parseIID(n.DownstreamPipeline.IID),
+				retried:     n.Retried,
 			})
 		}
 		if strings.EqualFold(n.Kind, "BRIDGE") {
@@ -386,6 +395,7 @@ func mapGQLJob(n *gqlJobNode, projectPath string, pipelineID int64) Job {
 		ProjectPath: projectPath,
 		PipelineID:  pipelineID,
 		Tags:        n.Tags,
+		Retried:     n.Retried,
 		Created:     derefTime(n.CreatedAt),
 		Started:     derefTime(n.StartedAt),
 		Finished:    derefTime(n.FinishedAt),

@@ -23,16 +23,24 @@ import (
 const (
 	pageMain    = "main"
 	pageHelp    = "help"
+	pageDetail  = "detail"
 	pageCurrent = "current"
 	pageWork    = "work"
 	pageInfra   = "infra"
 )
 
+// detailFetchTimeout bounds the on-demand fetch behind the detail view: one
+// GraphQL call per pipeline in the tree, a level of the tree at a time.
+const detailFetchTimeout = time.Minute
+
 const helpText = `glute — keys
 
   Tab / Shift-Tab    switch tabs
   1 / 2 / 3          Current / Work / Infrastructure
-  ↑ / ↓              scroll the Current tree
+  ↑ / ↓              scroll the Current tree (or finished list)
+  f                  move between the tree and the finished list
+  Enter / click      open a finished pipeline's jobs and timeline
+  Esc                close it
   t                  cycle the history window (1d / 7d / 30d)
   r                  refresh now
   ?                  toggle this help
@@ -60,6 +68,15 @@ type Dashboard struct {
 	current *currentView
 	work    *workView
 	infra   *infraView
+	detail  *detailView
+
+	// detailSeq numbers each opening of the detail view, so a fetch that lands
+	// after its view was closed, or replaced by another pipeline's, is dropped
+	// rather than drawn over whatever is showing now.
+	detailSeq int
+	// ctx is the dashboard's lifetime, which the detail fetches run under;
+	// Run replaces the background default with one it cancels on exit.
+	ctx context.Context
 
 	svc  gitlab.Service
 	opts Options
@@ -89,6 +106,7 @@ func NewDashboard(svc gitlab.Service, opts Options) *Dashboard {
 	current := newCurrentView(opts.RunnerAliases)
 	work := newWorkView()
 	infra := newInfraView(opts.RunnerAliases)
+	detail := newDetailView(opts.RunnerAliases)
 
 	pages := tview.NewPages()
 	pages.AddPage(pageCurrent, current.root, true, true)
@@ -112,6 +130,7 @@ func NewDashboard(svc gitlab.Service, opts Options) *Dashboard {
 	outer := tview.NewPages()
 	outer.AddPage(pageMain, main, true, true)
 	outer.AddPage(pageHelp, help, true, false)
+	outer.AddPage(pageDetail, detail.root, true, false)
 
 	d := &Dashboard{
 		app:       tview.NewApplication(),
@@ -123,6 +142,8 @@ func NewDashboard(svc gitlab.Service, opts Options) *Dashboard {
 		current:   current,
 		work:      work,
 		infra:     infra,
+		detail:    detail,
+		ctx:       context.Background(),
 		svc:       svc,
 		opts:      opts,
 		tabs:      []string{pageCurrent, pageWork, pageInfra},
@@ -133,13 +154,34 @@ func NewDashboard(svc gitlab.Service, opts Options) *Dashboard {
 	// Selecting a row in the Current tree reveals that row's full project path
 	// in the footer, the scroll-safe counterpart to the mouse hover the other
 	// tabs use (a scrolling table breaks the hover's fixed row math).
+	// Either panel's selection only speaks for the footer while that panel has
+	// the keyboard: a refresh re-selects in both, and the other one's path would
+	// otherwise replace the one the user is looking at.
 	current.table.SetSelectionChangedFunc(func(row, _ int) {
+		if current.finishedActive {
+			return
+		}
 		if path, ok := current.pathAtRow(row); ok {
 			d.hoverPath = path
 		} else {
 			d.hoverPath = ""
 		}
 		d.updateFooter()
+	})
+	current.finished.table.SetSelectionChangedFunc(func(row, _ int) {
+		if !current.finishedActive {
+			return
+		}
+		d.hoverPath = ""
+		if p, ok := current.finishedAt(row); ok {
+			d.hoverPath = p.ProjectPath
+		}
+		d.updateFooter()
+	})
+	current.finished.table.SetSelectedFunc(func(row, _ int) {
+		if p, ok := current.finishedAt(row); ok {
+			d.openDetail(p)
+		}
 	})
 
 	help.SetDoneFunc(func(int, string) { d.hideHelp() })
@@ -163,6 +205,7 @@ func (d *Dashboard) Run() error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	d.ctx = ctx
 
 	go watchDumpSignal(ctx)
 	go d.refreshLoop(ctx)
@@ -177,9 +220,23 @@ func (d *Dashboard) Run() error {
 
 func (d *Dashboard) onKey(ev *tcell.EventKey) *tcell.EventKey {
 	// While help is open, only our close keys act; everything else goes to it.
-	if name, _ := d.outer.GetFrontPage(); name == pageHelp {
+	switch name, _ := d.outer.GetFrontPage(); name {
+	case pageHelp:
 		if ev.Key() == tcell.KeyEscape || ev.Rune() == '?' || ev.Rune() == 'q' {
 			d.hideHelp()
+			return nil
+		}
+		return ev
+	case pageDetail:
+		// Likewise the detail view: q closes it (as it does the help) rather than
+		// quitting from under it, and the tab keys stay inert while it's up —
+		// everything else scrolls its table.
+		switch {
+		case ev.Key() == tcell.KeyEscape || ev.Rune() == 'q':
+			d.closeDetail()
+			return nil
+		case ev.Key() == tcell.KeyCtrlC:
+			d.app.Stop()
 			return nil
 		}
 		return ev
@@ -207,6 +264,12 @@ func (d *Dashboard) onKey(ev *tcell.EventKey) *tcell.EventKey {
 	case 't':
 		d.cycleWindow()
 		return nil
+	case 'f':
+		if d.tabs[d.active] == pageCurrent {
+			d.app.SetFocus(d.current.toggleFocusTarget())
+			d.syncCurrentFooter()
+			return nil
+		}
 	case '?':
 		d.showHelp()
 		return nil
@@ -233,24 +296,40 @@ func (d *Dashboard) selectTab(i int) {
 	// the Current tab, re-derive it from the row that's already selected so the
 	// path shows immediately rather than only after the next selection move.
 	d.hoverPath = ""
-	if d.tabs[i] == pageCurrent {
-		if row, _ := d.current.table.GetSelection(); row > 0 {
-			if path, ok := d.current.pathAtRow(row); ok {
-				d.hoverPath = path
-			}
-		}
-	}
 	d.focusActive()
+	if d.tabs[i] == pageCurrent {
+		d.syncCurrentFooter()
+	}
 	d.updateHeader()
 	d.updateFooter()
 }
 
-// focusActive directs keyboard focus at the active tab's primitive. The Current
-// tab's table must hold focus for its arrow-key scrolling; the other tabs have
-// no focusable widget, so focus rests on the pages container.
+// syncCurrentFooter re-derives the footer's path from the selected row of
+// whichever Current panel has the keyboard, so it shows at once when that
+// panel changes (a tab switch, the f key) rather than only on the next move.
+func (d *Dashboard) syncCurrentFooter() {
+	d.hoverPath = ""
+	if d.current.finishedActive {
+		row, _ := d.current.finished.table.GetSelection()
+		if p, ok := d.current.finishedAt(row); ok {
+			d.hoverPath = p.ProjectPath
+		}
+	} else if row, _ := d.current.table.GetSelection(); row > 0 {
+		if path, ok := d.current.pathAtRow(row); ok {
+			d.hoverPath = path
+		}
+	}
+	d.updateFooter()
+}
+
+// focusActive directs keyboard focus at the active tab's primitive. On the
+// Current tab that's whichever of its two tables last had the keyboard (the
+// tree, unless the user moved to the finished list), which must hold focus for
+// its arrow-key scrolling; the other tabs have no focusable widget, so focus
+// rests on the pages container.
 func (d *Dashboard) focusActive() {
 	if d.tabs[d.active] == pageCurrent {
-		d.app.SetFocus(d.current.table)
+		d.app.SetFocus(d.current.focusTarget())
 	} else {
 		d.app.SetFocus(d.pages)
 	}
@@ -302,6 +381,44 @@ func (d *Dashboard) hideHelp() {
 	d.focusActive()
 }
 
+// openDetail shows the detail view for a finished pipeline and fetches its tree
+// in the background: the view opens at once in its loading state, and the tree
+// replaces it when the fetch lands — unless the view was closed or moved on to
+// another pipeline in the meantime (detailSeq).
+func (d *Dashboard) openDetail(p gitlab.Pipeline) {
+	d.detailSeq++
+	seq := d.detailSeq
+	d.detail.loading(p)
+	d.outer.ShowPage(pageDetail)
+	d.app.SetFocus(d.detail.table)
+	d.updateFooter()
+
+	parent := d.ctx
+	go func() {
+		ctx, cancel := context.WithTimeout(parent, detailFetchTimeout)
+		defer cancel()
+		tree, err := d.svc.PipelineTree(ctx, p)
+		if err != nil {
+			log.Printf("pipeline tree %s #%d: %v", p.ProjectPath, p.ID, err)
+		}
+		d.app.QueueUpdateDraw(func() {
+			if seq != d.detailSeq {
+				return
+			}
+			d.detail.show(tree, err)
+		})
+	}()
+}
+
+// closeDetail hides the detail view and hands the keyboard back to the panel
+// it was opened from.
+func (d *Dashboard) closeDetail() {
+	d.detailSeq++ // a fetch still in flight is for a view nobody's looking at
+	d.outer.HidePage(pageDetail)
+	d.focusActive()
+	d.updateFooter()
+}
+
 // onMouse reveals the full project path of the row under the cursor in the
 // footer. tview has no native tooltip, so this is the conventional
 // hover-detail; it follows the mouse where the terminal reports motion and
@@ -310,10 +427,19 @@ func (d *Dashboard) onMouse(event *tcell.EventMouse, action tview.MouseAction) (
 	if event == nil {
 		return event, action
 	}
-	if name, _ := d.outer.GetFrontPage(); name == pageHelp {
-		return event, action // don't chase the mouse under the help overlay
-	}
 	x, y := event.Position()
+	switch name, _ := d.outer.GetFrontPage(); name {
+	case pageHelp:
+		return event, action // don't chase the mouse under the help overlay
+	case pageDetail:
+		// A click outside the detail view dismisses it, as clicking off a modal
+		// does; inside, the view's own table handles clicks and scrolling.
+		if action == tview.MouseLeftClick && !d.detail.contains(x, y) {
+			d.closeDetail()
+			return nil, action
+		}
+		return event, action
+	}
 
 	// The Current tab's tree table scrolls, so its footer detail is driven by row
 	// selection (see SetSelectionChangedFunc), not by mouse position. The
@@ -321,7 +447,28 @@ func (d *Dashboard) onMouse(event *tcell.EventMouse, action tview.MouseAction) (
 	// though, so it gets the usual hover reveal — but only while the cursor is
 	// actually over one of its rows, so passing over the tree above leaves the
 	// selection-derived path untouched.
+	//
+	// A click on a finished row opens that pipeline's detail view straight away
+	// — what clicking a row in a list means — with the panel taking focus and
+	// the row selected first, so closing the view comes back to it. The click is
+	// consumed, since the table would otherwise re-select the same row; so is a
+	// click on the panel that misses every row, which tview would turn into a
+	// selection of row -1 and then quietly reset to the top.
 	if d.tabs[d.active] == pageCurrent {
+		if action == tview.MouseLeftDown {
+			d.current.pressAt(x, y)
+		}
+		if action == tview.MouseLeftClick && d.current.finished.table.InRect(x, y) {
+			if idx, ok := d.current.finished.rowAt(x, y); ok {
+				if p, ok := d.current.finishedAt(idx + 1); ok {
+					d.current.finishedActive = true
+					d.app.SetFocus(d.current.finished.table)
+					d.current.finished.table.Select(idx+1, 0)
+					d.openDetail(p)
+				}
+			}
+			return nil, action
+		}
 		if path, ok := d.current.finished.hoverAt(x, y); ok && path != d.hoverPath {
 			d.hoverPath = path
 			d.updateFooter()
@@ -430,11 +577,19 @@ func (d *Dashboard) updateHeader() {
 }
 
 func (d *Dashboard) updateFooter() {
-	const hints = "[silver]Tab switch · t window · r refresh · ? help · q quit[-]"
+	hints := "[silver]Tab switch · t window · r refresh · ? help · q quit[-]"
+	path := d.hoverPath
+	switch {
+	case d.detailOpen():
+		// The detail view shows its own row's path; the footer carries only
+		// the status and the keys that work while it's up.
+		path = ""
+		hints = "[silver]↑/↓ scroll · Esc close · r refresh[-]"
+	}
 
 	// While hovering a row, reveal that project's full path.
-	if d.hoverPath != "" {
-		d.footer.SetText(fmt.Sprintf(" [aqua]%s[-]    %s", tview.Escape(d.hoverPath), hints))
+	if path != "" {
+		d.footer.SetText(fmt.Sprintf(" [aqua]%s[-]    %s", tview.Escape(path), hints))
 		return
 	}
 
@@ -462,6 +617,12 @@ func (d *Dashboard) updateFooter() {
 	}
 
 	d.footer.SetText(fmt.Sprintf(" %s%s%s    %s", status, trailer, title, hints))
+}
+
+// detailOpen reports whether the detail view is up.
+func (d *Dashboard) detailOpen() bool {
+	name, _ := d.outer.GetFrontPage()
+	return name == pageDetail
 }
 
 // watchDumpSignal writes every goroutine's stack to the log whenever a dump

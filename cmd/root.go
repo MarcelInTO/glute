@@ -66,7 +66,8 @@ func runDashboard() error {
 		title  string
 	)
 	if dashboardSample {
-		svc = gitlab.FakeService{Snap: gitlab.SampleSnapshot()}
+		snap := gitlab.SampleSnapshot()
+		svc = gitlab.FakeService{Snap: snap, Trees: gitlab.SampleTrees(snap)}
 		title = "sample data"
 	} else {
 		token, err := auth.LoadToken(instance)

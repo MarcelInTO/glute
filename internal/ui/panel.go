@@ -38,13 +38,25 @@ func (p *panelTable) addPath(fullPath string) {
 
 // hoverAt returns the full project path for the row under (x, y), if any.
 func (p *panelTable) hoverAt(x, y int) (string, bool) {
-	ix, iy, iw, ih := p.table.GetInnerRect()
-	if x < ix || x >= ix+iw || y < iy || y >= iy+ih {
-		return "", false
-	}
-	idx := (y - iy) - 1 // table row 0 is the header
-	if idx < 0 || idx >= len(p.paths) {
+	idx, ok := p.rowAt(x, y)
+	if !ok || idx >= len(p.paths) {
 		return "", false
 	}
 	return p.paths[idx], true
+}
+
+// rowAt returns the data-row index (0 = the first row under the header) at
+// screen position (x, y). It goes through the table's own CellAt, which counts
+// the scroll offset, so it stays right on a panel that scrolls (the Current
+// tab's finished list, once it's selectable).
+func (p *panelTable) rowAt(x, y int) (int, bool) {
+	ix, iy, iw, ih := p.table.GetInnerRect()
+	if x < ix || x >= ix+iw || y < iy || y >= iy+ih {
+		return 0, false
+	}
+	row, _ := p.table.CellAt(x, y)
+	if row < 1 { // the header (row 0), or below the last row (-1)
+		return 0, false
+	}
+	return row - 1, true
 }
