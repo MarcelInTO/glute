@@ -216,9 +216,10 @@ func TestDetailViewShowsFailedTree(t *testing.T) {
 	}
 }
 
-// TestDetailViewNamesWholeAtCommonWidth checks the timeline takes the room the
-// name doesn't need, rather than a fixed share: at 120 columns, inset panel
-// and all, the sample's longest job name still shows whole.
+// TestDetailViewNamesWholeAtCommonWidth checks the text columns come before
+// the timeline: it takes the room the name and runner don't need, rather than
+// a fixed share, so at 120 columns, inset panel and all, the sample's longest
+// job name and its runners still show whole.
 func TestDetailViewNamesWholeAtCommonWidth(t *testing.T) {
 	d, trees := newTreeDashboard()
 	p := d.snapshot.RecentPipelines[0] // #98, with a child pipeline
@@ -226,7 +227,7 @@ func TestDetailViewNamesWholeAtCommonWidth(t *testing.T) {
 	d.detail.show(trees[p.ID], nil)
 	out := renderToText(t, d, 120, 30)
 	t.Logf("detail view at 120 columns:\n%s", out)
-	for _, want := range []string{"integration-tests", "↳ deploy · main", "deploy-staging"} {
+	for _, want := range []string{"integration-tests", "↳ deploy · main", "deploy-staging", "shared-linux-01", "shared-linux-02"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("at 120 columns, missing %q (elided when it needn't be)", want)
 		}
@@ -491,5 +492,53 @@ func TestDetailViewHasItsOwnBackground(t *testing.T) {
 	}
 	if got := bgAt(fx-2, fy+5); got == detailBackground {
 		t.Error("the margin outside the frame took the panel's background; the tab should show there")
+	}
+}
+
+// TestDetailViewShowsRunners: a finished pipeline's job rows name the runner
+// that ran each job — aliased as in the tree — so "which runner ran the slow
+// job" can be read down the list; pipeline rows, and jobs that never ran, show
+// none. The bottom line repeats the selected job's.
+func TestDetailViewShowsRunners(t *testing.T) {
+	snap := gitlab.SampleSnapshot()
+	trees := gitlab.SampleTrees(snap)
+	d := NewDashboard(gitlab.FakeService{Snap: snap, Trees: trees},
+		Options{RunnerAliases: map[string]string{"shared-linux-01": "sl1"}})
+	d.snapshot = snap
+	d.current.update(snap)
+	p := snap.RecentPipelines[1] // #97: build on docker-builder, deploy-staging on shared-linux-01, smoke-test skipped
+	d.openDetail(p)
+	d.detail.show(trees[p.ID], nil)
+	out := renderToText(t, d, 120, 30)
+	t.Logf("detail view:\n%s", out)
+
+	tb := d.detail.table
+	runnerOf := func(job string) string { // the RUNNER cell of the row whose name ends in job
+		for row := 1; row < tb.GetRowCount(); row++ {
+			if strings.HasSuffix(tb.GetCell(row, detColName).Text, "· "+job) {
+				return tb.GetCell(row, detColRunner).Text
+			}
+		}
+		t.Fatalf("no row for job %q", job)
+		return ""
+	}
+	if got := tb.GetCell(1, detColRunner).Text; got != "" {
+		t.Errorf("the pipeline row's RUNNER = %q, want blank", got)
+	}
+	for job, want := range map[string]string{"build": "docker-builder", "deploy-staging": "sl1", "smoke-test": ""} {
+		if got := runnerOf(job); got != want {
+			t.Errorf("%s: RUNNER = %q, want %q", job, got, want)
+		}
+	}
+	if !strings.Contains(out, "RUNNER") || !strings.Contains(out, "docker-builder") || !strings.Contains(out, "sl1") {
+		t.Errorf("RUNNER column not rendered whole at 120 columns")
+	}
+	for row := 1; row < tb.GetRowCount(); row++ {
+		if strings.Contains(tb.GetCell(row, detColName).Text, "deploy-staging") {
+			tb.Select(row, 0)
+		}
+	}
+	if info := d.detail.info.GetText(true); !strings.Contains(info, "runner sl1") {
+		t.Errorf("bottom line = %q, want the selected job's runner", info)
 	}
 }

@@ -21,7 +21,10 @@ import (
 // timing ones: QUEUED (how long a job waited for a runner), START (how far into
 // the run it began), TIME, and a timeline bar per row. In a DAG pipeline the
 // durations alone don't add up to the wall-clock time; the bars show which
-// jobs overlapped and which chain the run actually waited on.
+// jobs overlapped and which chain the run actually waited on. RUNNER stays, as
+// in the tree: "which runner ran the slow job" is the next question after "which
+// job was slow", and it has to be scannable down the list, not one selected row
+// at a time.
 //
 // The tree is fetched on demand (Service.PipelineTree), so the view has a
 // loading and an error state as well as the tree itself.
@@ -44,6 +47,7 @@ const (
 	detColID = iota
 	detColName
 	detColStatus
+	detColRunner
 	detColQueued
 	detColStart
 	detColTime
@@ -51,11 +55,13 @@ const (
 	detailCols
 )
 
-// minTimelineWidth is the bar width the timeline keeps before the name column
-// gets the rest: below this a bar can't tell a 10% job from a 20% one. When the
-// pane is too narrow for both at full size, the name is elided down to leave
-// the timeline this much — or half the room, if even that is more.
-const minTimelineWidth = 30
+// minTimelineWidth is the narrowest the timeline gets before the text columns
+// give way. The text comes first: a job's name and its runner are what say
+// which job was slow and where it ran, and a timeline squeezed toward this
+// floor still shows a run's shape. So the name and runner columns get their
+// natural widths, and the timeline the rest, down to this (or a third of the
+// room on a very narrow pane); only past that are the name and runner elided.
+const minTimelineWidth = 12
 
 // detailBackground is the modal's own background: a charcoal a step up from a
 // dark terminal's black, so the panel stands apart from the tab behind it.
@@ -132,6 +138,8 @@ func newDetailView(aliases map[string]string) *detailView {
 
 	info := tview.NewTextView()
 	info.SetDynamicColors(true)
+	// One line: clip a long path at the edge rather than wrap its tail out of sight.
+	info.SetWrap(false)
 	info.SetBackgroundColor(detailBackground) // also the text's own background
 	legend := tview.NewTextView()
 	legend.SetDynamicColors(true)
@@ -214,6 +222,15 @@ func (v *detailView) show(tree gitlab.ActivePipeline, err error) {
 		t.SetCell(row, detColID, linkCell(pipelineIDText(r.id), r.url))
 		t.SetCell(row, detColName, name)
 		t.SetCell(row, detColStatus, curStatusCell(r.status))
+		// Aliased like the tree's RUNNER, but flexible where the tree's is a
+		// fixed 24: here it shares the width the timeline leaves with the name,
+		// max-min fair (see fit), so short aliases show whole and only an
+		// unaliased long description gives ground. The bottom line shows the
+		// selected row's in full.
+		runner := nameCell(v.displayRunner(r.runner))
+		runner.SetTextColor(tcell.ColorSilver)
+		runner.SetExpansion(0)
+		t.SetCell(row, detColRunner, runner)
 		t.SetCell(row, detColQueued, curNumCell(queued))
 		t.SetCell(row, detColStart, curNumCell(start))
 		t.SetCell(row, detColTime, curNumCell(took))
@@ -267,8 +284,8 @@ func (v *detailView) selectedURL() string {
 
 // showInfo puts the selected row's detail on the bottom line: the full project
 // path (a child pipeline can live in another project), plus who triggered a
-// pipeline row or which runner ran a job row — the attribution the timing
-// columns displaced.
+// pipeline row (the USER column the timing ones displaced) or which runner ran
+// a job row (in full, where the RUNNER column may have cut it).
 func (v *detailView) showInfo(row int) {
 	idx := row - 1
 	if idx < 0 || idx >= len(v.rows) {
@@ -285,10 +302,11 @@ func (v *detailView) showInfo(row int) {
 	v.info.SetText(text)
 }
 
-// fit sizes the timeline and the name column for a table innerWidth wide: the
-// numeric columns keep their content widths; the name gets its natural width
-// if that still leaves the timeline minTimelineWidth, and is elided otherwise;
-// the timeline takes the rest, and its bars are redrawn to that width.
+// fit sizes the timeline and the two text columns (name, runner) for a table
+// innerWidth wide: the numeric columns keep their content widths; the text
+// columns get their natural widths if that still leaves the timeline
+// minTimelineWidth, and share what's left of the room max-min fair otherwise
+// (fitFlexColumns); the timeline takes the rest, redrawn to that width.
 func (v *detailView) fit(innerWidth int) {
 	t := v.table
 	rows, cols := t.GetRowCount(), t.GetColumnCount()
@@ -297,13 +315,13 @@ func (v *detailView) fit(innerWidth int) {
 	}
 	room := innerWidth - (cols - 1) // tview's one-cell column gaps
 	for c := range cols {
-		if c != detColName && c != detColTimeline {
+		if c != detColName && c != detColRunner && c != detColTimeline {
 			room -= columnWidth(t, rows, c)
 		}
 	}
-	bar := room - naturalWidth(t, rows, detColName)
+	bar := room - naturalWidth(t, rows, detColName) - naturalWidth(t, rows, detColRunner)
 	if bar < minTimelineWidth {
-		bar = max(bar, min(minTimelineWidth, room/2))
+		bar = max(bar, min(minTimelineWidth, room/3))
 	}
 	bar = max(bar, len("TIMELINE"))
 
@@ -316,7 +334,7 @@ func (v *detailView) fit(innerWidth int) {
 			cell.SetText(timelineBar(s, axis))
 		}
 	}
-	fitFlexColumns(t, innerWidth, []int{detColName})
+	fitFlexColumns(t, innerWidth, []int{detColName, detColRunner})
 }
 
 // setDetailHeader writes the detail table's header row. Only the name column
@@ -330,6 +348,7 @@ func setDetailHeader(t *tview.Table) {
 		{"ID", 0, tview.AlignRight},
 		{"PIPELINE / JOB", 1, tview.AlignLeft},
 		{"STATUS", 0, tview.AlignLeft},
+		{"RUNNER", 0, tview.AlignLeft},
 		{"QUEUED", 0, tview.AlignRight},
 		{"START", 0, tview.AlignRight},
 		{"TIME", 0, tview.AlignRight},
@@ -337,7 +356,7 @@ func setDetailHeader(t *tview.Table) {
 	}
 	for c, col := range cols {
 		cell := tview.NewTableCell(col.name)
-		if c == detColName {
+		if c == detColName || c == detColRunner {
 			cell.SetReference(col.name) // elide with the column; see setHeader
 		}
 		cell.SetTextColor(tcell.ColorAqua)

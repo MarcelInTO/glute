@@ -309,6 +309,10 @@ Keep it CGO-free so cross-compilation stays trivial.
   active tree does (`flattenActive`, the shared `treeBuilder`, the same job
   order) and swaps the live columns for QUEUED (the runner wait, `Job.Queued`),
   START (offset from the root's creation), TIME, and a per-row **timeline bar**.
+  RUNNER stays, aliased as in the tree, because "which runner ran the slow
+  job" is the next question after "which job was slow". It started out only on
+  the bottom line, one selected row at a time, which is no help when scanning
+  for the slow runner.
   In a DAG pipeline the durations don't add up to the wall-clock time, and the
   bars show what overlapped and which chain the run waited on. The axis starts
   at the root's `Created` and runs to the latest finish anywhere in the tree (a
@@ -317,8 +321,14 @@ Keep it CGO-free so cross-compilation stays trivial.
   so it reads as a bracket over its jobs. Every row that ran gets at least one
   cell. TIME is GitLab's `duration` (which excludes gaps), while the bar is wall
   clock, so they can differ. The bars are rendered in the table's draw hook at
-  the real width: the name column keeps its natural width if the timeline still
-  gets `minTimelineWidth`, and is elided otherwise. The durations drop HMS's
+  the real width. **Text comes before the timeline:** the name and RUNNER
+  columns (both flexible) get their natural widths, and the timeline takes the
+  rest, down to `minTimelineWidth` (12, or a third of the room). Only past that
+  do the two text columns share the room max-min fair. The first version
+  reserved 30 cells for the timeline first, which made job names unreadable at
+  120 columns once RUNNER was added. With real data, one unaliased 24-character
+  runner description sets RUNNER's width for every row, so a `[runner_aliases]`
+  entry for it is the cheapest way to win back room. The durations drop HMS's
   blank padding, which only exists to stop ticking timers jittering, and show a
   zero as `0`, not `—`. The fetch runs off the UI goroutine. `detailSeq` drops a
   result whose view was closed or replaced meanwhile.
