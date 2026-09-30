@@ -141,6 +141,20 @@ follow-ups: the Current tree no longer shows **retried job attempts twice**
 no retried flag), and the timeline **cuts idle gaps** that are longer than all
 the busy time combined.
 
+As of 2026-09-30 (later): **v0.3.0 released**, tag on `64aecfd`, green on both
+sides first (GitLab 235073, GitHub CI 36749231485). It ships the
+finished-pipeline detail view (with its timeline, idle-gap cuts, inset panel
+and charcoal background), the latest-attempt-only fix for retried jobs, and
+**pipeline ids as GitLab links**: an OSC 8 terminal hyperlink, plus glute
+launching the browser on a plain click or `o`, but not over SSH. `o` on a job
+row opens the job's page. The release pipelines (GitLab 235074, GitHub release
+36750047770) were done in about 6 minutes. The tap formula (4 hashes) and the
+bucket manifest matched the GitHub `SHA256SUMS`, and both pushes said
+*pushed*. The re-downloaded bucket zip and linux-amd64 tarball re-hashed
+correctly and report `glute v0.3.0`. Not yet tried on a real desktop: the
+browser launch on macOS, Windows or a Linux desktop (it was tested only with a
+stand-in opener).
+
 **Why:** Records live status and next-steps that aren't obvious from the code.
 
 **How to apply:**

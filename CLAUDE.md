@@ -486,6 +486,15 @@ Keep it CGO-free so cross-compilation stays trivial.
   hash, and that the "Push formula"/"Push manifest" steps say *pushed*, not
   skipped. Done this way for v0.2.0; the bucket's URL was also re-downloaded and
   re-hashed once, which is the check that proves a manifest, not just the file.
+  **The two sides' `SHA256SUMS` differ, by design.** Each pipeline builds its
+  own archives from the same `make` targets, and tar and zip record file
+  timestamps, so each side's archives hash differently. Check each side
+  against its own sums: the tap and the bucket against the **GitHub**
+  release's, since that's where they download from, and a GitLab package
+  against GitLab's. Seen on v0.3.0: every archive differed between the two
+  sides, and each one matched its own side's list. Both releases were done
+  about 6 minutes after the tag was pushed, the mirror's spacing being most of
+  that.
 - **The mirror's token needs the `workflow` scope.** The push mirror carries
   `.github/workflows/` along with everything else, and GitHub refuses a PAT-authed
   push that creates or updates a workflow file unless the token has `workflow`
