@@ -5,6 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 3ea31245-90a6-499d-b976-c840d837c60f
+  modified: 2026-09-30T15:49:59.418Z
 ---
 
 glute is a single-binary, read-only Go TUI dashboard for GitLab CI/CD
@@ -128,6 +129,17 @@ live trace was capturable (`ptrace_scope=1` blocks gdb/dlv attach to a
 non-child). **If it recurs: `kill -USR1 <pid>` first, then read the dump in
 `glute.log` before killing.** A killed run leaves the terminal in raw mode — run
 `reset` to restore it.
+
+As of 2026-09-30 (committed to `main`, not pushed): the
+**finished-pipeline detail view**. `f`, then ↑/↓ and Enter, or a click on a
+finished row, opens a modal with the pipeline's whole tree plus QUEUED/START/TIME
+and a per-row timeline bar. Marcel chose the timeline option over "tree
+as-is". The tree is fetched on demand (`Service.PipelineTree`, `tree.go`), not
+from the store; see CLAUDE.md for why. Committed (`3186628`), then both
+follow-ups: the Current tree no longer shows **retried job attempts twice**
+(Marcel: "an especial annoyance"; the fix is name-based, because REST jobs carry
+no retried flag), and the timeline **cuts idle gaps** that are longer than all
+the busy time combined.
 
 **Why:** Records live status and next-steps that aren't obvious from the code.
 

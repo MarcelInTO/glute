@@ -15,8 +15,8 @@ import (
 var colorTag = regexp.MustCompile(`\[[^\]]*\]`)
 
 // plainBar is a timeline bar with its color tags stripped: the glyph layout.
-func plainBar(s span, total time.Duration, width int) string {
-	return colorTag.ReplaceAllString(timelineBar(s, total, width), "")
+func plainBar(s span, a timeAxis) string {
+	return colorTag.ReplaceAllString(timelineBar(s, a), "")
 }
 
 func TestTimelineBar(t *testing.T) {
@@ -34,30 +34,111 @@ func TestTimelineBar(t *testing.T) {
 		{"a pipeline brackets its jobs", span{ran: true, pipeline: true, wait: 0, run: sec(20), end: total}, "──━━━━━━━━"},
 		{"never ran: no bar", span{ran: false}, ""},
 	}
+	linear := newTimeAxis(total, nil, 10)
 	for _, c := range cases {
-		if got := plainBar(c.s, total, 10); got != c.want {
+		if got := plainBar(c.s, linear); got != c.want {
 			t.Errorf("%s: bar = %q, want %q", c.name, got, c.want)
 		}
 	}
 	// The run is drawn in the row's status color, the wait in muted silver.
-	got := timelineBar(span{ran: true, wait: 0, run: sec(50), end: total, status: gitlab.StatusFailed}, total, 10)
+	got := timelineBar(span{ran: true, wait: 0, run: sec(50), end: total, status: gitlab.StatusFailed}, linear)
 	if !strings.Contains(got, "[#ff0000]█") || !strings.Contains(got, "░") {
 		t.Errorf("failed bar should be red after a silver wait, got %q", got)
 	}
-	if timelineBar(span{ran: true, end: sec(5)}, 0, 10) != "" {
+	if timelineBar(span{ran: true, end: sec(5)}, newTimeAxis(0, nil, 10)) != "" {
 		t.Error("a zero-length timeline should draw nothing")
 	}
 }
 
 func TestTimelineHeaderMarksTotal(t *testing.T) {
-	if got := timelineHeader(5*time.Minute+52*time.Second, 20); got != "TIMELINE        5:52" {
+	if got := timelineHeader(newTimeAxis(5*time.Minute+52*time.Second, nil, 20)); got != "TIMELINE        5:52" {
 		t.Errorf("header = %q, want the total flush right", got)
 	}
-	if got := timelineHeader(5*time.Minute, 10); got != "TIMELINE" {
+	if got := timelineHeader(newTimeAxis(5*time.Minute, nil, 10)); got != "TIMELINE" {
 		t.Errorf("header = %q: no room for the total, want the bare label", got)
 	}
-	if got := timelineHeader(0, 30); got != "TIMELINE" {
+	if got := timelineHeader(newTimeAxis(0, nil, 30)); got != "TIMELINE" {
 		t.Errorf("header = %q: nothing timed, want the bare label", got)
+	}
+	// With a cut, the header says how much idle time the ┆ removed — or, short
+	// of room for that, falls back to label and total.
+	cut := newTimeAxis(10*time.Hour, []idleGap{{time.Hour, 9 * time.Hour}}, 40)
+	if got := timelineHeader(cut); got != "TIMELINE  ┆ cuts 8:00:00 idle   10:00:00" {
+		t.Errorf("header = %q, want the idle cut named", got)
+	}
+	if got := timelineHeader(newTimeAxis(10*time.Hour, []idleGap{{time.Hour, 9 * time.Hour}}, 20)); got != "TIMELINE    10:00:00" {
+		t.Errorf("narrow header = %q, want label and total only", got)
+	}
+}
+
+// TestIdleGapsCutOnlyDominantIdle checks what counts as a cut: idle stretches
+// (no job queued or running) at least a minute long and longer than all the
+// busy time. A wait shorter than the work stays drawn to scale; a retry days
+// later is cut; pipeline spans, which cover their own gaps, don't count as busy.
+func TestIdleGapsCutOnlyDominantIdle(t *testing.T) {
+	mins := func(m int) time.Duration { return time.Duration(m) * time.Minute }
+	job := func(from, to int) span { return span{ran: true, wait: mins(from), run: mins(from), end: mins(to)} }
+	root := span{ran: true, pipeline: true, run: 0, end: mins(12)}
+
+	// sems-platform's shape: 6.5 busy minutes, then a 5.5-minute wait for release.
+	shaped := []span{root, job(0, 6), job(1, 5), job(11, 12)}
+	if got := idleGaps(shaped, mins(12)); len(got) != 0 {
+		t.Errorf("a wait shorter than the work was cut: %+v", got)
+	}
+
+	// tlp-sz!438's shape: a minute of work, then a retry four days later.
+	late := []span{{ran: true, pipeline: true, end: mins(4*24*60 + 1)}, job(0, 1), job(4*24*60, 4*24*60+1)}
+	got := idleGaps(late, mins(4*24*60+1))
+	if len(got) != 1 || got[0].from != mins(1) || got[0].to != mins(4*24*60) {
+		t.Errorf("gaps = %+v, want the one between the minute of work and the retry", got)
+	}
+
+	// Overlapping jobs merge: nothing is idle between them.
+	if got := idleGaps([]span{job(0, 10), job(5, 20), job(8, 9)}, mins(20)); len(got) != 0 {
+		t.Errorf("overlapping jobs left a gap: %+v", got)
+	}
+	// Under a minute is never cut, however lopsided.
+	sec := []span{{ran: true, end: time.Second}, {ran: true, wait: 50 * time.Second, run: 50 * time.Second, end: 51 * time.Second}}
+	if got := idleGaps(sec, 51*time.Second); len(got) != 0 {
+		t.Errorf("a sub-minute gap was cut: %+v", got)
+	}
+}
+
+// TestTimeAxisCutsGaps lays two busy stretches around a cut gap on 21 cells:
+// the gap takes one cell drawn ┆ on every row, and the busy stretches share the
+// other 20 by length, so a job's bar keeps its place within its stretch.
+func TestTimeAxisCutsGaps(t *testing.T) {
+	h := time.Hour
+	a := newTimeAxis(100*h, []idleGap{{10 * h, 90 * h}}, 21)
+	if a.idle != 80*h {
+		t.Errorf("idle = %s, want 80h", a.idle)
+	}
+	cases := []struct {
+		name string
+		s    span
+		want string
+	}{
+		{"work before the gap", span{ran: true, wait: 0, run: 0, end: 10 * h}, "██████████┆"},
+		{"work after it", span{ran: true, wait: 90 * h, run: 90 * h, end: 100 * h}, "          ┆██████████"},
+		{"a pipeline across it", span{ran: true, pipeline: true, run: 0, end: 100 * h}, "━━━━━━━━━━┆━━━━━━━━━━"},
+		{"half the stretch before it", span{ran: true, wait: 5 * h, run: 5 * h, end: 10 * h}, "     █████┆"},
+		{"a row that never ran still carries the break", span{}, "          ┆"},
+	}
+	for _, c := range cases {
+		if got := plainBar(c.s, a); got != c.want {
+			t.Errorf("%s: bar = %q, want %q", c.name, got, c.want)
+		}
+	}
+	// A stretch too short for a share of its own still gets a cell: a few
+	// seconds' retry after a cut stays visible rather than vanishing under ┆.
+	tail := newTimeAxis(100*h, []idleGap{{10 * h, 100*h - 5*time.Second}}, 21)
+	if got := plainBar(span{ran: true, wait: 100*h - 5*time.Second, run: 100*h - 5*time.Second, end: 100 * h}, tail); !strings.HasSuffix(got, "┆█") {
+		t.Errorf("a 5s job after the cut = %q, want its own cell after the ┆", got)
+	}
+
+	// Too narrow for a cut to leave room: the axis stays linear.
+	if narrow := newTimeAxis(100*h, []idleGap{{10 * h, 90 * h}}, 2); narrow.idle != 0 {
+		t.Errorf("a 2-cell axis cut a gap: %+v", narrow)
 	}
 }
 

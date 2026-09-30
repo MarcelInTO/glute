@@ -2,8 +2,10 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MarcelInTO/glute/internal/format"
 	"github.com/MarcelInTO/glute/internal/gitlab"
@@ -34,6 +36,7 @@ type detailView struct {
 	rows    []curRow          // data rows, indexed by (tableRow - 1)
 	spans   []span            // each data row's timeline geometry, parallel to rows
 	total   time.Duration     // the timeline's extent: origin → last finish
+	gaps    []idleGap         // idle stretches the timeline cuts out (see idleGaps)
 }
 
 // Detail table column indices; detailCols is the count.
@@ -137,6 +140,7 @@ func (v *detailView) show(tree gitlab.ActivePipeline, err error) {
 	setDetailHeader(t)
 	v.rows = flattenActive([]gitlab.ActivePipeline{tree})
 	v.spans, v.total = timelineSpans(v.rows)
+	v.gaps = idleGaps(v.spans, v.total)
 	for i, r := range v.rows {
 		row := i + 1
 		name := nameCell(strings.Repeat("  ", r.depth) + r.label)
@@ -172,7 +176,7 @@ func (v *detailView) placeholder(text string, color tcell.Color) {
 	t := v.table
 	t.Clear()
 	setDetailHeader(t)
-	v.rows, v.spans, v.total = nil, nil, 0
+	v.rows, v.spans, v.total, v.gaps = nil, nil, 0, nil
 	cell := tview.NewTableCell(text)
 	cell.SetTextColor(color)
 	cell.SetSelectable(false)
@@ -233,12 +237,13 @@ func (v *detailView) fit(innerWidth int) {
 	}
 	bar = max(bar, len("TIMELINE"))
 
+	axis := newTimeAxis(v.total, v.gaps, bar)
 	if cell := t.GetCell(0, detColTimeline); cell != nil {
-		cell.SetText(timelineHeader(v.total, bar))
+		cell.SetText(timelineHeader(axis))
 	}
 	for i, s := range v.spans {
 		if cell := t.GetCell(i+1, detColTimeline); cell != nil {
-			cell.SetText(timelineBar(s, v.total, bar))
+			cell.SetText(timelineBar(s, axis))
 		}
 	}
 	fitFlexColumns(t, innerWidth, []int{detColName})
@@ -343,46 +348,277 @@ func timelineSpans(rows []curRow) ([]span, time.Duration) {
 	return spans, total
 }
 
-// timelineBar draws a span width cells wide against a timeline total long:
-// blank up to the wait, a light run of waiting, then a solid run of working in
-// the row's status color. A job gets ░ then █; a pipeline, which spans its
-// jobs, gets the thinner ─ then ━ so it reads as a bracket over them. Every row
-// that ran gets at least one cell, however short, so no job vanishes.
-func timelineBar(s span, total time.Duration, width int) string {
-	if !s.ran || total <= 0 || width <= 0 {
+// minIdleGap is the shortest idle stretch the timeline will cut out; below it
+// a cut saves too little room to be worth breaking the axis for.
+const minIdleGap = time.Minute
+
+// idleGap is a stretch of the timeline, as offsets from the origin, in which
+// no job was queued or running.
+type idleGap struct{ from, to time.Duration }
+
+// idleGaps finds the stretches of the timeline worth cutting out: those in
+// which no job was queued or running, that last at least minIdleGap, and that
+// are longer than all the busy time put together. The last test is what keeps
+// a pipeline's shape honest: a five-minute wait for a release in a twelve-
+// minute run is part of where the time went, and stays drawn to scale, while
+// a job retried three days after the rest finished would otherwise stretch the
+// axis so far that every real job shrinks into a column or two. Pipelines'
+// own spans don't count as busy — they cover their gaps by definition.
+func idleGaps(spans []span, total time.Duration) []idleGap {
+	var busy []idleGap
+	for _, s := range spans {
+		if s.ran && !s.pipeline {
+			busy = append(busy, idleGap{s.wait, s.end})
+		}
+	}
+	if len(busy) == 0 || total <= 0 {
+		return nil
+	}
+	sort.Slice(busy, func(i, j int) bool { return busy[i].from < busy[j].from })
+
+	// Walk the merged busy intervals, collecting the uncovered stretches
+	// between them (and before the first and after the last).
+	var idle []idleGap
+	var covered, at time.Duration
+	cur := busy[0]
+	flush := func(b idleGap) {
+		if b.from > at {
+			idle = append(idle, idleGap{at, b.from})
+		}
+		covered += b.to - b.from
+		at = b.to
+	}
+	for _, b := range busy[1:] {
+		if b.from <= cur.to {
+			cur.to = max(cur.to, b.to)
+			continue
+		}
+		flush(cur)
+		cur = b
+	}
+	flush(cur)
+	if total > at {
+		idle = append(idle, idleGap{at, total})
+	}
+
+	var cut []idleGap
+	for _, g := range idle {
+		if d := g.to - g.from; d >= minIdleGap && d > covered {
+			cut = append(cut, g)
+		}
+	}
+	return cut
+}
+
+// timeAxis maps timeline offsets to bar cells. Without gaps it's linear over
+// the whole width; with them, each cut gap takes a single cell (drawn ┆ down
+// every row, an axis break) and the busy stretches between share the rest of
+// the width in proportion to their length.
+type timeAxis struct {
+	total time.Duration
+	width int
+	idle  time.Duration // the idle time the cuts removed, for the header
+	segs  []axisSeg     // busy and gap stretches covering [0, total], in order
+}
+
+type axisSeg struct {
+	from, to    time.Duration
+	gap         bool
+	cell, cells int // the first cell and how many the stretch gets
+}
+
+func newTimeAxis(total time.Duration, gaps []idleGap, width int) timeAxis {
+	a := timeAxis{total: total, width: width}
+	if total <= 0 || width <= 0 {
+		return a
+	}
+	// Cutting only pays if the busy stretches still get most of the width.
+	var idle time.Duration
+	for _, g := range gaps {
+		idle += g.to - g.from
+	}
+	if len(gaps) == 0 || width-len(gaps) < 2*len(gaps)+1 || idle >= total {
+		a.segs = []axisSeg{{from: 0, to: total, cells: width}}
+		return a
+	}
+	var at time.Duration
+	for _, g := range gaps {
+		if g.from > at {
+			a.segs = append(a.segs, axisSeg{from: at, to: g.from})
+		}
+		a.segs = append(a.segs, axisSeg{from: g.from, to: g.to, gap: true, cells: 1})
+		a.idle += g.to - g.from
+		at = g.to
+	}
+	if at < total {
+		a.segs = append(a.segs, axisSeg{from: at, to: total})
+	}
+
+	// Every busy stretch gets a cell of its own first — a few seconds' retry
+	// after the last cut is a sliver of the busy time, and would otherwise get
+	// none and vanish under the ┆ — then the rest is shared by length, largest
+	// remainder first, so the cells add up to exactly the width left over.
+	busySegs := 0
+	for _, sg := range a.segs {
+		if !sg.gap {
+			busySegs++
+		}
+	}
+	busyCells, busyTime := int64(width-len(gaps)-busySegs), int64(total-a.idle)
+	given := int64(0)
+	type rem struct{ seg, r int64 }
+	var rems []rem
+	for i := range a.segs {
+		if sg := &a.segs[i]; !sg.gap {
+			n := int64(sg.to-sg.from) * busyCells
+			sg.cells = 1 + int(n/busyTime)
+			given += int64(sg.cells - 1)
+			rems = append(rems, rem{int64(i), n % busyTime})
+		}
+	}
+	sort.Slice(rems, func(i, j int) bool { return rems[i].r > rems[j].r })
+	for k := 0; given < busyCells && k < len(rems); k++ {
+		a.segs[rems[k].seg].cells++
+		given++
+	}
+	cell := 0
+	for i := range a.segs {
+		a.segs[i].cell = cell
+		cell += a.segs[i].cells
+	}
+	return a
+}
+
+// floor is the cell that time t falls in (where something starting at t is
+// drawn from).
+func (a timeAxis) floor(t time.Duration) int {
+	for i, sg := range a.segs {
+		if t >= sg.to && i < len(a.segs)-1 {
+			continue
+		}
+		if sg.gap || sg.to <= sg.from {
+			return sg.cell
+		}
+		off := int(int64(max(t-sg.from, 0)) * int64(sg.cells) / int64(sg.to-sg.from))
+		return sg.cell + min(off, sg.cells)
+	}
+	return 0
+}
+
+// ceil is the cell boundary at or after time t (where something ending at t
+// is drawn to).
+func (a timeAxis) ceil(t time.Duration) int {
+	for i, sg := range a.segs {
+		if t > sg.to && i < len(a.segs)-1 {
+			continue
+		}
+		if sg.gap {
+			return sg.cell + 1
+		}
+		if sg.to <= sg.from {
+			return sg.cell
+		}
+		span, n := int64(sg.to-sg.from), int64(max(t-sg.from, 0))*int64(sg.cells)
+		return sg.cell + min(int((n+span-1)/span), sg.cells)
+	}
+	return 0
+}
+
+// timelineBar draws a span on the axis: blank up to the wait, a light run of
+// waiting, then a solid run of working in the row's status color. A job gets ░
+// then █; a pipeline, which spans its jobs, gets the thinner ─ then ━ so it
+// reads as a bracket over them. Every row that ran gets at least one cell,
+// however short, so no job vanishes. A cut idle gap is a ┆ on every row, drawn
+// over anything passing through it, so the break reads as one line down the
+// table.
+func timelineBar(s span, a timeAxis) string {
+	if a.total <= 0 || a.width <= 0 {
 		return ""
 	}
-	floor := func(d time.Duration) int { return min(int(int64(d)*int64(width)/int64(total)), width) }
-	ceil := func(d time.Duration) int {
-		return min(int((int64(d)*int64(width)+int64(total)-1)/int64(total)), width)
+	const (
+		blank = iota
+		wait
+		run
+		cut
+	)
+	kinds := make([]int, a.width)
+	if s.ran {
+		runFrom := min(a.floor(s.run), a.width-1)
+		runTo := min(max(a.ceil(s.end), runFrom+1), a.width)
+		waitFrom := min(a.floor(s.wait), runFrom)
+		for i := waitFrom; i < runFrom; i++ {
+			kinds[i] = wait
+		}
+		for i := runFrom; i < runTo; i++ {
+			kinds[i] = run
+		}
 	}
-	runFrom := min(floor(s.run), width-1)
-	runTo := max(ceil(s.end), runFrom+1)
-	waitFrom := min(floor(s.wait), runFrom)
+	for _, sg := range a.segs {
+		if sg.gap && sg.cell < a.width {
+			kinds[sg.cell] = cut
+		}
+	}
+	n := a.width
+	for n > 0 && kinds[n-1] == blank {
+		n--
+	}
 
 	waitGlyph, runGlyph := "░", "█"
 	if s.pipeline {
 		waitGlyph, runGlyph = "─", "━"
 	}
 	var b strings.Builder
-	b.WriteString(strings.Repeat(" ", waitFrom))
-	if waitFrom < runFrom {
-		fmt.Fprintf(&b, "[#%06x]%s", tcell.ColorSilver.Hex(), strings.Repeat(waitGlyph, runFrom-waitFrom))
+	prev, tagged := blank, false
+	for _, k := range kinds[:n] {
+		if k != prev && k != blank {
+			c := tcell.ColorSilver
+			if k == run {
+				c = statusColor(s.status)
+			}
+			fmt.Fprintf(&b, "[#%06x]", c.Hex())
+			tagged = true
+		}
+		prev = k
+		switch k {
+		case blank:
+			b.WriteByte(' ')
+		case wait:
+			b.WriteString(waitGlyph)
+		case run:
+			b.WriteString(runGlyph)
+		case cut:
+			b.WriteString("┆")
+		}
 	}
-	fmt.Fprintf(&b, "[#%06x]%s[-]", statusColor(s.status).Hex(), strings.Repeat(runGlyph, runTo-runFrom))
+	if tagged {
+		b.WriteString("[-]")
+	}
 	return b.String()
 }
 
 // timelineHeader labels the timeline column and marks its right edge with the
-// total it spans, so a bar's length can be read as time.
-func timelineHeader(total time.Duration, width int) string {
+// wall-clock total it spans, so a bar's length can be read as time. When idle
+// gaps were cut it says how much, since the ┆ breaks alone don't.
+func timelineHeader(a timeAxis) string {
 	const label = "TIMELINE"
-	if total <= 0 {
+	if a.total <= 0 {
 		return label
 	}
-	end := strings.TrimSpace(format.HMS(total))
-	if gap := width - len(label) - len(end); gap >= 1 {
-		return label + strings.Repeat(" ", gap) + end
+	end := strings.TrimSpace(format.HMS(a.total))
+	fits := func(left string) (string, bool) {
+		gap := a.width - utf8.RuneCountInString(left) - len(end)
+		if gap < 1 {
+			return "", false
+		}
+		return left + strings.Repeat(" ", gap) + end, true
+	}
+	if a.idle > 0 {
+		if h, ok := fits(label + "  ┆ cuts " + strings.TrimSpace(format.HMS(a.idle)) + " idle"); ok {
+			return h
+		}
+	}
+	if h, ok := fits(label); ok {
+		return h
 	}
 	return label
 }

@@ -281,10 +281,22 @@ Keep it CGO-free so cross-compilation stays trivial.
   gets `minTimelineWidth`, and is elided otherwise. The durations drop HMS's
   blank padding, which only exists to stop ticking timers jittering, and show a
   zero as `0`, not `—`. The fetch runs off the UI goroutine. `detailSeq` drops a
-  result whose view was closed or replaced meanwhile. Known gap: a pipeline with
-  a job retried days later spans days, and its real work collapses into a
-  column or two (seen on tlp-sz!438: 95h axis, 48-minute child). Compressing
-  idle gaps would fix it, but isn't built.
+  result whose view was closed or replaced meanwhile.
+- **The timeline cuts idle stretches that would swamp it** (`idleGaps`,
+  `timeAxis`). A stretch is idle when no job is queued or running; pipeline
+  spans don't count as busy, since they cover their own gaps. It's cut when it
+  lasts at least `minIdleGap` (1m) and **longer than all the busy time
+  combined**. That rule is what keeps a run's shape honest: sems-platform's
+  5½-minute wait before `release` in a 12-minute run is part of where the time
+  went, and stays to scale. tlp-sz!438, whose job was retried 3½ days after the
+  rest, had a 95h axis with its 48-minute child in one column; three cuts
+  remove 94h and spread the child's jobs across the bar. A cut takes one cell,
+  drawn `┆` on every row as an axis break. Each busy stretch gets at least one
+  cell (a 4-second retry after the last cut otherwise vanished under the `┆`),
+  and the rest of the width is shared by length. The header keeps the true
+  wall-clock total and names how much was cut (`┆ cuts 94:16:46 idle`). QUEUED,
+  START and TIME stay real numbers. The axis stays linear when it's too narrow
+  for a cut to leave room.
 - **Which Current panel owns the keyboard** (`currentView.finishedActive`) is
   set only by intent: the `f` key, or a mouse press on a panel. It is never set
   from focus events, because tview moves focus incidentally too.
