@@ -11,8 +11,27 @@ and job stats across a configured watchlist of "products". Go, cross-platform.
 - `make check` — the CI gate: `fmt-check`, `vet`, `test`
 - `make test` / `go test ./...`
 - `make smoke` — build, then `glute version` + `glute refresh --sample`
+- `make drive-all` — play every TUI scenario (`tools/ptydrive/scenarios/`)
+  against the real binary in a pty; `make drive SCENARIO=<file>` plays one and
+  prints its `show` steps
 - `make dist VERSION=v1.2.3` — release archives + `SHA256SUMS` into `dist/`
 - `make verify-dist` / `make formula` — see the release section at the end
+
+**Check interaction changes in the real binary, not only in unit tests.**
+The UI tests call `onKey`/`onMouse` directly, and that skips tview's own event
+dispatch. So they can't catch a click that never arrives (tview sends a mouse
+move ahead of the press in one shared event, and swallowing the move drops the
+press), a key that goes to the wrong widget (Enter via `onKey` never reaches a
+table without a running app), or a footer that overflows at a real width. All
+three passed the unit tests and failed in the real binary. So a change to keys,
+mouse handling or layout gets a scenario, or an existing one extended, and a
+`make drive-all` run. To check a change against the real instance, use a
+throwaway `zz_live_test.go` gated on an env var: it loads glute's own config
+and token (`config.Load`, `auth.LoadToken`), runs the real client, and is
+deleted before committing. A colour choice was made from an image, not in the
+abstract: a throwaway test dumped the simulated screen's cells with their
+colours, and Pillow rendered them to a PNG, with the candidate colours side by
+side.
 
 Stack: Go 1.26, cobra (CLI), rivo/tview + gdamore/tcell (TUI),
 pelletier/go-toml/v2 (config), `gitlab.com/gitlab-org/api/client-go` (the
@@ -360,13 +379,14 @@ Keep it CGO-free so cross-compilation stays trivial.
   `Table.CellAt`, which counts the scroll offset (`panelTable.rowAt`).
 - The Current table is *selectable* (so it scrolls with ↑/↓); it reveals the
   selected row's full project path in the footer via `SetSelectionChangedFunc`,
-  because the mouse-hover reveal below assumes fixed, non-scrolling row math and
-  would point at the wrong row once scrolled.
-- tview has no native tooltip — on the non-scrolling tabs, "hover" reveals a
-  row's full project path in the footer via a mouse-motion capture (falls back to
-  click). The Current tab's finished panel (non-scrolling, stable row math) gets
-  this hover reveal too, but only while the cursor is over one of its rows, so it
-  doesn't clobber the tree's selection-derived footer path.
+  because it's scrolled from the keyboard: the row that matters is the selected
+  one, not the one under the mouse.
+- tview has no native tooltip — "hover" reveals a row's full project path in the
+  footer via a mouse-motion capture (falls back to click). The Current tab's
+  finished panel gets this hover reveal too, but only while the cursor is over
+  one of its rows, so it doesn't clobber the tree's selection-derived footer
+  path. That panel scrolls now (it's selectable), so its row math goes through
+  `Table.CellAt`, which counts the scroll offset (`panelTable.rowAt`).
 - **tview `Table` parks at the bottom of an overflowing list if it first renders
   empty.** When a `Table` (no cell borders) first draws with content that fits its
   pane — which every panel does on the empty first render, before the initial
