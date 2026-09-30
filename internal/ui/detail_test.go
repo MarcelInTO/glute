@@ -198,7 +198,7 @@ func TestDetailViewShowsFailedTree(t *testing.T) {
 	t.Logf("detail view:\n%s", out)
 
 	for _, want := range []string{"Pipeline #97", "feat/rate-limit", "QUEUED", "START", "TIMELINE",
-		"deploy-staging", "failed", "smoke-test", "skipped", "░", "█", "━", "Esc close"} {
+		"deploy-staging", "failed", "smoke-test", "skipped", "░", "█", "━", "Esc/q close"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("detail view missing %q", want)
 		}
@@ -216,19 +216,51 @@ func TestDetailViewShowsFailedTree(t *testing.T) {
 	}
 }
 
-// TestDetailViewNamesWholeAtModestWidth checks the timeline takes the room the
-// name doesn't need, rather than a fixed share: at 96 columns the sample's
-// longest job name still shows whole.
-func TestDetailViewNamesWholeAtModestWidth(t *testing.T) {
+// TestDetailViewNamesWholeAtCommonWidth checks the timeline takes the room the
+// name doesn't need, rather than a fixed share: at 120 columns, inset panel
+// and all, the sample's longest job name still shows whole.
+func TestDetailViewNamesWholeAtCommonWidth(t *testing.T) {
 	d, trees := newTreeDashboard()
 	p := d.snapshot.RecentPipelines[0] // #98, with a child pipeline
 	d.openDetail(p)
 	d.detail.show(trees[p.ID], nil)
-	out := renderToText(t, d, 96, 24)
-	t.Logf("detail view at 96 columns:\n%s", out)
+	out := renderToText(t, d, 120, 30)
+	t.Logf("detail view at 120 columns:\n%s", out)
 	for _, want := range []string{"integration-tests", "↳ deploy · main", "deploy-staging"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("at 96 columns, missing %q (elided when it needn't be)", want)
+			t.Errorf("at 120 columns, missing %q (elided when it needn't be)", want)
+		}
+	}
+}
+
+// TestDetailViewIsInset checks the modal sits inside the screen with the tab
+// visible all round it, so it reads as a panel over the tab: at 120×30 it's
+// inset 10 columns and 3 rows, and the finished panel's title shows beside it.
+func TestDetailViewIsInset(t *testing.T) {
+	d, trees := newTreeDashboard()
+	p := d.snapshot.RecentPipelines[0]
+	d.openDetail(p)
+	d.detail.show(trees[p.ID], nil)
+	out := renderToText(t, d, 120, 30)
+	if x, y, w, h := d.detail.frame.GetRect(); x != 10 || y != 3 || w != 100 || h != 24 {
+		t.Errorf("frame rect = (%d,%d %dx%d), want (10,3 100x24)", x, y, w, h)
+	}
+	if !strings.Contains(out, "┌ Recently") {
+		t.Errorf("the tab beneath should show around the panel:\n%s", out)
+	}
+}
+
+func TestDetailInset(t *testing.T) {
+	cases := []struct{ w, h, mx, my int }{
+		{120, 30, 10, 3}, // about a twelfth and an eighth
+		{200, 60, 16, 7},
+		{80, 24, 4, 3}, // the floors
+		{76, 16, 2, 2}, // small: the panel keeps 72×12 by giving up margin
+		{40, 10, 1, 1}, // tiny: a one-cell margin is the last to go
+	}
+	for _, c := range cases {
+		if mx, my := detailInset(c.w, c.h); mx != c.mx || my != c.my {
+			t.Errorf("detailInset(%d, %d) = (%d, %d), want (%d, %d)", c.w, c.h, mx, my, c.mx, c.my)
 		}
 	}
 }
@@ -325,9 +357,29 @@ func TestClickOpensFinishedRow(t *testing.T) {
 	if row, _ := fin.GetSelection(); row != 3 || d.app.GetFocus() != d.detail.table {
 		t.Errorf("click should select row 3 and focus the view, got row %d", row)
 	}
-	click(0, 0) // the header line, outside the view
-	if d.detailOpen() || d.app.GetFocus() != fin {
-		t.Error("a click outside should close the view, back onto the finished list")
+	// Outside the view, a wheel over the margin must not reach the tab beneath.
+	mouse := func(x, y int, a tview.MouseAction) *tcell.EventMouse {
+		ev, _ := d.onMouse(tcell.NewEventMouse(x, y, tcell.Button1, tcell.ModNone), a)
+		return ev
+	}
+	if mouse(2, 5, tview.MouseScrollDown) != nil || !d.detailOpen() {
+		t.Fatal("a wheel over the margin should be swallowed, leaving the view open")
+	}
+	// A move must pass: tview sends it ahead of the press in the same dispatch,
+	// sharing the event, so swallowing it would drop the press after it.
+	if mouse(2, 5, tview.MouseMove) == nil {
+		t.Fatal("a move over the margin was swallowed; the press after it would be lost")
+	}
+	// A press outside dismisses it, and the release that ends the same click
+	// is swallowed — which is what stops tview building a click on the tab.
+	if mouse(2, 5, tview.MouseLeftDown) != nil || d.detailOpen() || d.app.GetFocus() != fin {
+		t.Fatal("a press outside should close the view, back onto the finished list")
+	}
+	if mouse(2, 5, tview.MouseLeftUp) != nil {
+		t.Error("the dismissing press's release reached the tab")
+	}
+	if mouse(2, 5, tview.MouseLeftUp) == nil {
+		t.Error("only the one release should be swallowed")
 	}
 
 	// A click on the panel below the last row opens nothing and leaves the

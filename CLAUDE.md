@@ -264,7 +264,22 @@ Keep it CGO-free so cross-compilation stays trivial.
 - **The finished-pipeline detail view** (`detail.go`) opens over the Current tab
   when a finished row is chosen, by `f` (focus the finished list), ↑/↓ and Enter,
   or by a click on the row. Esc, `q` (which closes it rather than quitting) or a
-  click outside closes it. It exists for two questions about a finished run:
+  click outside closes it, and the panel's own bottom line says so, since a hint
+  only in the footer went unnoticed. The panel is inset about 1/12 of the width
+  and 1/8 of the height (`detailInset`, floors of 4 columns and 3 rows, giving
+  way on small screens), so the tab shows all round it and it reads as a panel
+  over the tab, not a new screen. A Flex can't express a margin that scales
+  with a floor, so a small `insetView` lays it out and, like a Flex, clears
+  nothing. **Mouse handling while it's open** (`onMouse`) has two traps, both
+  from how tview dispatches one terminal event. (1) A move is sent ahead of the
+  press or release, sharing one event, so swallowing the move (returning nil)
+  silently drops the press after it. Moves outside the panel must always pass;
+  a unit test that calls `onMouse` for a lone press won't notice. (2) tview
+  builds a click only from a release that got through. So a *press* outside
+  dismisses the panel, and `dismissing` swallows that gesture's release, which
+  keeps the click off the tab beneath. Everything else outside the panel (the
+  wheel) is swallowed, since `Pages` hands an unconsumed event to the page
+  underneath. It exists for two questions about a finished run:
   which jobs failed, and where the time went. So it lays out the tree the way the
   active tree does (`flattenActive`, the shared `treeBuilder`, the same job
   order) and swaps the live columns for QUEUED (the runner wait, `Job.Queued`),

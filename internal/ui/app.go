@@ -40,7 +40,7 @@ const helpText = `glute — keys
   ↑ / ↓              scroll the Current tree (or finished list)
   f                  move between the tree and the finished list
   Enter / click      open a finished pipeline's jobs and timeline
-  Esc                close it
+  Esc / q            close it
   t                  cycle the history window (1d / 7d / 30d)
   r                  refresh now
   ?                  toggle this help
@@ -90,6 +90,10 @@ type Dashboard struct {
 	lastErr    error
 	refreshing bool
 	hoverPath  string // full project path under the mouse, shown in the footer
+	// dismissing is set by the press that closed the detail view, so the
+	// release (and the click tview would build from it) that finish the same
+	// gesture are swallowed rather than landing on the tab beneath.
+	dismissing bool
 	// window is the selected history lookback the Work and Infrastructure
 	// panels aggregate over; zero (the default) means the full Top window. It's
 	// session state only — not persisted — and is resolved against the
@@ -428,17 +432,37 @@ func (d *Dashboard) onMouse(event *tcell.EventMouse, action tview.MouseAction) (
 		return event, action
 	}
 	x, y := event.Position()
+	if d.dismissing && action == tview.MouseLeftUp {
+		// Swallowing the release also stops tview building a click from it.
+		d.dismissing = false
+		return nil, action
+	}
 	switch name, _ := d.outer.GetFrontPage(); name {
 	case pageHelp:
 		return event, action // don't chase the mouse under the help overlay
 	case pageDetail:
-		// A click outside the detail view dismisses it, as clicking off a modal
-		// does; inside, the view's own table handles clicks and scrolling.
-		if action == tview.MouseLeftClick && !d.detail.contains(x, y) {
-			d.closeDetail()
-			return nil, action
+		// A press outside the detail view dismisses it, as clicking off a
+		// modal does; inside, the view's own table handles clicks and
+		// scrolling. Everything else outside it is swallowed: tview's Pages
+		// would hand an event the view didn't take to the tab beneath, so a
+		// wheel over the margin would scroll the tab under the modal. It's the
+		// press, not the click, that dismisses: tview builds a click only from
+		// a release that got through, and letting that release through would
+		// let the click land on the tab (see dismissing).
+		//
+		// A move is never swallowed. tview dispatches one terminal event as a
+		// move (if the pointer moved) and then the press or release, sharing
+		// one event between them: swallowing the move would drop the press
+		// that follows it, so a click on the margin would never arrive. A move
+		// reaching the tab is harmless.
+		if d.detail.contains(x, y) || action == tview.MouseMove {
+			return event, action
 		}
-		return event, action
+		if action == tview.MouseLeftDown {
+			d.closeDetail()
+			d.dismissing = true
+		}
+		return nil, action
 	}
 
 	// The Current tab's tree table scrolls, so its footer detail is driven by row
@@ -584,7 +608,7 @@ func (d *Dashboard) updateFooter() {
 		// The detail view shows its own row's path; the footer carries only
 		// the status and the keys that work while it's up.
 		path = ""
-		hints = "[silver]↑/↓ scroll · Esc close · r refresh[-]"
+		hints = "[silver]↑/↓ scroll · Esc/q close · r refresh[-]"
 	}
 
 	// While hovering a row, reveal that project's full path.

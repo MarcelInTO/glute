@@ -26,7 +26,7 @@ import (
 // The tree is fetched on demand (Service.PipelineTree), so the view has a
 // loading and an error state as well as the tree itself.
 type detailView struct {
-	root   *tview.Flex // full-screen overlay: frame, inset so the tab shows around it
+	root   *insetView  // full-screen overlay: frame, inset so the tab shows around it
 	frame  *tview.Flex // the bordered, titled box
 	table  *tview.Table
 	info   *tview.TextView // the selected row's full path and attribution
@@ -57,15 +57,60 @@ const (
 // the timeline this much — or half the room, if even that is more.
 const minTimelineWidth = 30
 
-// The modal's inset from the screen edge. Two rows keep glute's header and
-// footer lines visible above and below it, with the tab's own border between;
-// one column shows just the tab's side border, so it reads as a panel over the
-// tab. A wider side margin would show a sliver of the tab's first column
-// through the gap, which reads as clutter, not as depth.
-const (
-	detailMarginRows = 2
-	detailMarginCols = 1
-)
+// detailLegend explains the timeline's glyphs and, last, how to close the
+// view: the footer says so too, but a hint outside the panel is easy to miss.
+const detailLegend = "[silver]░[-] queued  [white]█[-] ran  [white]━[-] pipeline    [aqua]Esc[-]/[aqua]q[-] close "
+
+// detailInset is how far the modal is inset from each screen edge: about a
+// twelfth of the width and an eighth of the height, so enough of the tab shows
+// all round for the modal to read as a panel over it rather than as a new
+// screen. The floors (4 columns, 3 rows) keep that true on a modest terminal;
+// on a small one the panel's content wins, and the inset gives way until the
+// panel is minDetailWidth × minDetailHeight or the margins are down to one.
+func detailInset(width, height int) (mx, my int) {
+	const minDetailWidth, minDetailHeight = 72, 12
+	mx, my = max(width/12, 4), max(height/8, 3)
+	if width-2*mx < minDetailWidth {
+		mx = max((width-minDetailWidth)/2, 1)
+	}
+	if height-2*my < minDetailHeight {
+		my = max((height-minDetailHeight)/2, 1)
+	}
+	return mx, my
+}
+
+// insetView lays its child out inside its own rect, detailInset in from each
+// edge, and draws nothing else: it doesn't clear its margins, so the page
+// beneath stays visible around the child. (A Flex with spacer items would do
+// the clearing part, but can't express a margin that scales with a floor.)
+// Focus, keys and the mouse all go straight to the child.
+type insetView struct {
+	*tview.Box
+	child tview.Primitive
+}
+
+func newInsetView(child tview.Primitive) *insetView {
+	return &insetView{Box: tview.NewBox(), child: child}
+}
+
+func (v *insetView) Draw(screen tcell.Screen) {
+	x, y, w, h := v.GetRect()
+	mx, my := detailInset(w, h)
+	v.child.SetRect(x+mx, y+my, max(w-2*mx, 0), max(h-2*my, 0))
+	v.child.Draw(screen)
+}
+
+func (v *insetView) Focus(delegate func(p tview.Primitive)) { delegate(v.child) }
+
+func (v *insetView) HasFocus() bool { return v.child.HasFocus() }
+
+func (v *insetView) InputHandler() func(*tcell.EventKey, func(tview.Primitive)) {
+	return v.child.InputHandler()
+}
+
+func (v *insetView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, func(tview.Primitive)) (bool, tview.Primitive) {
+	return v.child.MouseHandler()
+}
 
 func newDetailView(aliases map[string]string) *detailView {
 	t := tview.NewTable()
@@ -78,10 +123,10 @@ func newDetailView(aliases map[string]string) *detailView {
 	legend := tview.NewTextView()
 	legend.SetDynamicColors(true)
 	legend.SetTextAlign(tview.AlignRight)
-	legend.SetText("[silver]░[-] queued  [white]█[-] ran  [white]━[-] pipeline ")
+	legend.SetText(detailLegend)
 	bottom := tview.NewFlex()
 	bottom.AddItem(info, 0, 1, false)
-	bottom.AddItem(legend, 34, 0, false)
+	bottom.AddItem(legend, tview.TaggedStringWidth(detailLegend), 0, false)
 
 	frame := tview.NewFlex().SetDirection(tview.FlexRow)
 	frame.SetBorder(true)
@@ -89,16 +134,7 @@ func newDetailView(aliases map[string]string) *detailView {
 	frame.AddItem(t, 0, 1, true)
 	frame.AddItem(bottom, 1, 0, false)
 
-	middle := tview.NewFlex()
-	middle.AddItem(nil, detailMarginCols, 0, false)
-	middle.AddItem(frame, 0, 1, true)
-	middle.AddItem(nil, detailMarginCols, 0, false)
-	root := tview.NewFlex().SetDirection(tview.FlexRow)
-	root.AddItem(nil, detailMarginRows, 0, false)
-	root.AddItem(middle, 0, 1, true)
-	root.AddItem(nil, detailMarginRows, 0, false)
-
-	v := &detailView{root: root, frame: frame, table: t, info: info, legend: legend, aliases: aliases}
+	v := &detailView{root: newInsetView(frame), frame: frame, table: t, info: info, legend: legend, aliases: aliases}
 	// The timeline is drawn to whatever width the pane has, so it's rendered in
 	// the draw hook, like the flexible name column it shares the room with.
 	t.SetEvaluateAllRows(true)
