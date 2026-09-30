@@ -527,12 +527,12 @@ func (d *Dashboard) onMouse(event *tcell.EventMouse, action tview.MouseAction) (
 		return nil, action
 	}
 
-	// The Current tab's tree table scrolls, so its footer detail is driven by row
-	// selection (see SetSelectionChangedFunc), not by mouse position. The
-	// non-scrolling "recently finished" panel below it has stable row math,
-	// though, so it gets the usual hover reveal — but only while the cursor is
-	// actually over one of its rows, so passing over the tree above leaves the
-	// selection-derived path untouched.
+	// The Current tab's tree is scrolled from the keyboard, so its footer
+	// detail follows the selected row (see SetSelectionChangedFunc), not the
+	// mouse. The "recently finished" panel below it also gets the usual hover
+	// reveal (its row math counts the scroll offset; see panelTable.rowAt) —
+	// but only while the cursor is actually over one of its rows, so passing
+	// over the tree above leaves the selection-derived path untouched.
 	//
 	// A click on a finished row opens that pipeline's detail view straight away
 	// — what clicking a row in a list means — with the panel taking focus and

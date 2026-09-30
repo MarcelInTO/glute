@@ -84,9 +84,10 @@ func TestCurrentTabShowsRecentlyFinished(t *testing.T) {
 	}
 }
 
-// TestCurrentFinishedPanelHoverRevealsFullPath checks the non-scrolling finished
-// panel supports the mouse-hover path reveal the tree above can't (the tree
-// scrolls, so it reveals via selection instead).
+// TestCurrentFinishedPanelHoverRevealsFullPath checks the finished panel
+// supports the mouse-hover path reveal, which the tree above doesn't use (it's
+// scrolled from the keyboard, so it reveals via selection instead).
+// TestFinishedHoverFollowsScroll covers the hover once the panel has scrolled.
 func TestCurrentFinishedPanelHoverRevealsFullPath(t *testing.T) {
 	d := newSampleDashboard()
 	_ = renderToText(t, d, 130, 32) // draw once so GetInnerRect is populated
