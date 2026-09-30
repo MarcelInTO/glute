@@ -231,3 +231,86 @@ func TestSampleTreesCoverRecentPipelines(t *testing.T) {
 		t.Errorf("sample trees should include a failed job, a skipped job and a child (got %v %v %v)", failed, skipped, child)
 	}
 }
+
+func TestLatestAttempts(t *testing.T) {
+	jobs := []Job{
+		{ID: 5, Name: "build"},
+		{ID: 9, Name: "test"}, // the retry: newest of its name
+		{ID: 7, Name: "test"}, // an earlier attempt, no flag (REST)
+		{ID: 6, Name: "test", Retried: true},
+		{ID: 8, Name: "lint", Retried: true}, // replaced by an attempt the store doesn't hold
+	}
+	got := latestAttempts(jobs)
+	if len(got) != 2 || got[0].ID != 5 || got[1].ID != 9 {
+		t.Errorf("latestAttempts = %+v, want build #5 and test #9, in input order", got)
+	}
+}
+
+// TestActivePipelinesShowsLatestAttemptOnly builds the Current tree from what
+// the bulk path stores after a resync: REST jobs, which carry no retried mark,
+// with a failed first attempt beside the running retry. The tree shows the job
+// once — the retry — and counts it once in the progress column.
+func TestActivePipelinesShowsLatestAttemptOnly(t *testing.T) {
+	roots := []Pipeline{{ID: 1, ProjectPath: "a/x", Status: StatusRunning}}
+	jobs := []Job{
+		{ID: 10, PipelineID: 1, Name: "build", Stage: "build", Status: StatusSuccess},
+		{ID: 11, PipelineID: 1, Name: "test", Stage: "test", Status: StatusFailed},
+		{ID: 12, PipelineID: 1, Name: "test", Stage: "test", Status: StatusRunning},
+	}
+	got := activePipelines(roots, jobs, nil, nil)
+	if len(got) != 1 || jobNames(got[0].Jobs) != "build,test" {
+		t.Fatalf("tree jobs = %+v, want build and test once each", got)
+	}
+	if got[0].Jobs[1].ID != 12 {
+		t.Errorf("test row is attempt #%d, want the retry #12", got[0].Jobs[1].ID)
+	}
+	if done, total := got[0].Progress(); done != 1 || total != 2 {
+		t.Errorf("progress = %d/%d, want 1/2", done, total)
+	}
+}
+
+// TestFetchJobsTreeDropsSupersededChildren walks an active root whose bridge
+// was retried: the child the first attempt triggered (and that child's own
+// child) is still fetched, since its jobs used runners, but gets no edge — and
+// the edge recorded for it before the retry is removed — so the Current tree
+// shows only the child the retry triggered.
+func TestFetchJobsTreeDropsSupersededChildren(t *testing.T) {
+	f := &fakeTree{nodes: map[string]fakeNode{
+		treeKey("g/app", 1): {
+			pipe: Pipeline{ID: 100, Status: StatusRunning},
+			children: []childRef{
+				{projectPath: "g/app", iid: 2, retried: true},
+				{projectPath: "g/app", iid: 3},
+			},
+		},
+		treeKey("g/app", 2): {
+			pipe:     Pipeline{ID: 200, Status: StatusFailed},
+			jobs:     []Job{{ID: 20, PipelineID: 200, Name: "e2e", Status: StatusFailed}},
+			children: []childRef{{projectPath: "g/lib", iid: 1}},
+		},
+		treeKey("g/lib", 1): {pipe: Pipeline{ID: 250, Status: StatusSuccess}},
+		treeKey("g/app", 3): {
+			pipe: Pipeline{ID: 300, Status: StatusRunning},
+			jobs: []Job{{ID: 30, PipelineID: 300, Name: "e2e", Status: StatusRunning}},
+		},
+	}}
+	p := &Poller{
+		fetchTree:   f.fetch,
+		opts:        PollOptions{}.withDefaults(),
+		childPipes:  map[int64]Pipeline{200: {ID: 200}}, // learned while the first attempt ran
+		childParent: map[int64]int64{200: 100},
+	}
+	jobs, _, _, errs := p.fetchJobsTree(context.Background(), []Pipeline{{ID: 100, IID: 1, ProjectPath: "g/app", Status: StatusRunning}})
+	if len(errs) != 0 {
+		t.Fatalf("errs: %v", errs)
+	}
+	if len(jobs) != 2 {
+		t.Errorf("jobs = %+v, want both children's jobs kept for the store", jobs)
+	}
+	if len(p.childParent) != 1 || p.childParent[300] != 100 {
+		t.Errorf("edges = %v, want only 300→100", p.childParent)
+	}
+	if _, ok := p.childPipes[200]; ok {
+		t.Error("the superseded child's metadata should be gone")
+	}
+}

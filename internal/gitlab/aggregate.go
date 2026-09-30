@@ -154,12 +154,13 @@ func newTreeBuilder(jobs []Job, childPipes map[int64]Pipeline, childParent map[i
 	return b
 }
 
-// build returns pi's node: its jobs in execution order (see sortPipelineJobs)
-// and its children, recursively, ordered by start time. The builder's seen set
-// guards against a malformed edge cycle.
+// build returns pi's node: the latest attempt of each of its jobs, in execution
+// order (see latestAttempts, sortPipelineJobs), and its children, recursively,
+// ordered by start time. The builder's seen set guards against a malformed
+// edge cycle.
 func (b *treeBuilder) build(pi Pipeline) ActivePipeline {
 	b.seen[pi.ID] = true
-	node := ActivePipeline{Pipeline: pi, Jobs: sortPipelineJobs(b.jobsByPipe[pi.ID])}
+	node := ActivePipeline{Pipeline: pi, Jobs: sortPipelineJobs(latestAttempts(b.jobsByPipe[pi.ID]))}
 	childIDs := append([]int64(nil), b.kids[pi.ID]...)
 	sort.Slice(childIDs, func(i, j int) bool {
 		ci, cj := b.childPipes[childIDs[i]], b.childPipes[childIDs[j]]
@@ -176,6 +177,35 @@ func (b *treeBuilder) build(pi Pipeline) ActivePipeline {
 		node.Children = append(node.Children, b.build(cp))
 	}
 	return node
+}
+
+// latestAttempts keeps only the latest attempt of each of one pipeline's jobs,
+// so a retried job is one row, not one per run. Both fetch paths return every
+// attempt: GraphQL marks the superseded ones Retried, and the REST project jobs
+// list (the bulk path, on every cold start and resync) returns them with no
+// mark at all. So the test that works for either is structural: retrying
+// creates a new job with the same name in the same pipeline and a higher id,
+// and job names are otherwise unique within a pipeline (parallel: and matrix
+// jobs get suffixed names). A job marked Retried is dropped even when it's the
+// only one of its name held: its replacement exists, it's just in a status the
+// store doesn't keep (canceled, manual).
+func latestAttempts(jobs []Job) []Job {
+	latest := make(map[string]int64, len(jobs))
+	for _, j := range jobs {
+		if j.Retried {
+			continue
+		}
+		if id, ok := latest[j.Name]; !ok || j.ID > id {
+			latest[j.Name] = j.ID
+		}
+	}
+	out := make([]Job, 0, len(latest))
+	for _, j := range jobs {
+		if id, ok := latest[j.Name]; ok && id == j.ID {
+			out = append(out, j)
+		}
+	}
+	return out
 }
 
 // sortPipelineJobs orders a pipeline's jobs the way they execute, matching the

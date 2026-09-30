@@ -72,6 +72,10 @@ type Poller struct {
 	client *Client
 	specs  []ProductSpec
 	opts   PollOptions
+	// fetchTree is client.FetchPipelineJobTree, held as a function so both
+	// job-tree walks (the warm path's fetchJobsTree, the detail view's
+	// walkPipelineTree) run against canned responses in tests.
+	fetchTree jobTreeFetcher
 
 	// Retained window store and its bookkeeping. Accessed only from Refresh,
 	// which the UI never calls concurrently, so no lock is needed here.
@@ -131,6 +135,7 @@ func NewPoller(client *Client, specs []ProductSpec, opts PollOptions) *Poller {
 		client:      client,
 		specs:       specs,
 		opts:        opts.withDefaults(),
+		fetchTree:   client.FetchPipelineJobTree,
 		pipes:       map[int64]Pipeline{},
 		jobs:        map[int64]Job{},
 		jobsDone:    map[int64]bool{},
@@ -585,6 +590,9 @@ type treeNode struct {
 	parentID    int64  // immediate parent pipeline id; 0 for a root
 	projectPath string // this pipeline's project (a child may differ from its root)
 	iid         int64  // this pipeline's per-project number
+	// superseded marks a child a retried bridge triggered (or any pipeline
+	// beneath one): a run its parent has since replaced.
+	superseded bool
 }
 
 // fetchJobsTree fetches, via GraphQL, jobs for each root pipeline and — following
@@ -602,7 +610,10 @@ type treeNode struct {
 // p.childPipes/p.childParent (with each child's real project path and status from
 // its own fetch), so the Current tab can reconstruct the active tree. Edges are
 // recorded for every discovered child, even a finished one, so a finished child
-// under a still-running root is retained.
+// under a still-running root is retained — except a superseded one: the child a
+// retried bridge triggered is still walked (its jobs ran on runners, so the
+// store wants them) but gets no edge, and one recorded before the retry is
+// removed, so the tree shows only the run that replaced it.
 func (p *Poller) fetchJobsTree(ctx context.Context, roots []Pipeline) (jobs []Job, settled, pending []int64, errs []error) {
 	type nodeKey struct {
 		path string
@@ -647,7 +658,7 @@ func (p *Poller) fetchJobsTree(ctx context.Context, roots []Pipeline) (jobs []Jo
 				defer func() { <-sem }()
 				n := frontier[i]
 				r := result{node: n}
-				pipe, js, kids, err := p.client.FetchPipelineJobTree(ctx, n.projectPath, n.iid, jobFetchScopes)
+				pipe, js, kids, err := p.fetchTree(ctx, n.projectPath, n.iid, jobFetchScopes)
 				if err != nil {
 					r.errs = append(r.errs, err)
 				} else {
@@ -673,7 +684,12 @@ func (p *Poller) fetchJobsTree(ctx context.Context, roots []Pipeline) (jobs []Jo
 			// This node's pipeline id: the root's own id, or the id from the
 			// fetched pipe for a discovered child.
 			nodeID := r.node.rootID
-			if r.node.parentID != 0 {
+			switch {
+			case r.node.parentID != 0 && r.node.superseded:
+				nodeID = r.pipe.ID
+				delete(p.childPipes, nodeID)
+				delete(p.childParent, nodeID)
+			case r.node.parentID != 0:
 				nodeID = r.pipe.ID
 				// Record the child edge + metadata regardless of whether it's
 				// finished, so the Current tree keeps a finished child.
@@ -697,6 +713,7 @@ func (p *Poller) fetchJobsTree(ctx context.Context, roots []Pipeline) (jobs []Jo
 					parentID:    nodeID,
 					projectPath: cr.projectPath,
 					iid:         cr.iid,
+					superseded:  r.node.superseded || cr.retried,
 				})
 			}
 		}

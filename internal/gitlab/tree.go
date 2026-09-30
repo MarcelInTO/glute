@@ -40,7 +40,7 @@ func (p *Poller) PipelineTree(ctx context.Context, root Pipeline) (ActivePipelin
 		return cached, nil
 	}
 
-	tree, err := walkPipelineTree(ctx, p.client.FetchPipelineJobTree, root, p.opts.Concurrency)
+	tree, err := walkPipelineTree(ctx, p.fetchTree, root, p.opts.Concurrency)
 	if err != nil {
 		return ActivePipeline{}, err
 	}
@@ -86,10 +86,11 @@ func treeFinished(a ActivePipeline) bool {
 
 // walkPipelineTree fetches root and, following its bridges level by level, every
 // downstream child pipeline beneath it, then assembles the tree. It keeps every
-// job status (no scope filter) but only the latest attempt of each job: a
-// retried job's superseded runs, and the child pipelines that retried bridges
-// triggered, are left out, as GitLab's own pipeline view leaves them out — a
-// passed pipeline whose flaky job failed once shouldn't list that job as failed.
+// job status (no scope filter) but only the latest attempt of each job (the
+// tree builder's latestAttempts), and it doesn't follow a retried bridge to the
+// child pipeline it triggered: GitLab's own pipeline view leaves superseded runs
+// out too, and a passed pipeline whose flaky job failed once shouldn't list that
+// job as failed.
 //
 // Any failed fetch fails the whole walk: a tree silently missing a child would
 // misreport where a failure was or where the time went. A child that no longer
@@ -158,11 +159,7 @@ func walkPipelineTree(ctx context.Context, fetch jobTreeFetcher, root Pipeline, 
 				childPipes[r.pipe.ID] = r.pipe
 				childParent[r.pipe.ID] = n.parentID
 			}
-			for _, j := range r.jobs {
-				if !j.Retried {
-					jobs = append(jobs, j)
-				}
-			}
+			jobs = append(jobs, r.jobs...)
 			for _, c := range r.children {
 				k := nodeKey{c.projectPath, c.iid}
 				if c.retried || c.iid == 0 || visited[k] {

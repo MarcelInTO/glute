@@ -125,16 +125,24 @@ Keep it CGO-free so cross-compilation stays trivial.
   — `parseGID` extracts the int; pipelines are looked up by `(project, iid)`, so
   `Pipeline.IID` is populated. GraphQL status enums are UPPERCASE — lowercased to
   match our `Status` constants.
-- **GraphQL `pipeline.jobs` returns retried attempts too** (verified on the
-  instance: tlp-sz!438, a `SUCCESS` pipeline, lists two `FAILED` attempts of a
-  job that later passed, plus retried *bridges* whose superseded child pipelines
-  still exist). The query fetches `retried`, and it is carried as `Job.Retried`
-  and `childRef.retried`. The store keeps retried attempts, since they consumed
-  runners and count for compute and failure stats. The detail view drops them
-  and the children of retried bridges, as GitLab's own pipeline view does, so a
-  passed pipeline doesn't list a flaky job as failed. The Current tree does
-  **not** filter them yet, so a retried job shows twice there. REST sets no
-  `Retried`.
+- **Both job paths return retried attempts, and only one marks them.** GraphQL
+  `pipeline.jobs` returns every attempt, with `retried` on the superseded ones.
+  On the instance, tlp-sz!438, a `SUCCESS` pipeline, lists two `FAILED` attempts
+  of a job that later passed, plus retried *bridges* whose superseded child
+  pipelines still exist. The REST project jobs list (the bulk path) returns
+  every attempt too, but with **no** retried field: sems-hosting pipeline 234953
+  lists four `validate` runs. The store keeps every attempt, since they consumed
+  runners and count for compute and failure stats. Both trees (Current and
+  detail) show only the latest attempt: `latestAttempts` in the shared
+  `treeBuilder` keeps the highest id per job name within a pipeline, and drops
+  anything GraphQL marked `Retried`. The name test is what survives a resync,
+  because a flag-only filter would bring the duplicates back every 10 minutes
+  when the bulk path overwrote the store's jobs. It relies on job names being
+  unique within a pipeline except for retries, which GitLab guarantees
+  (`parallel:` and matrix jobs get suffixed names). A retried bridge's child
+  pipeline is *superseded*: the warm walk still fetches it (its jobs used
+  runners) but records no edge for it or anything beneath it, and it deletes an
+  edge learned before the retry. The detail walk doesn't follow it at all.
 - **Child pipelines** (dynamically-generated, `source=parent_pipeline`) do NOT
   appear in the project pipeline list, and a parent's own jobs are just the
   bridge/trigger job. On the warm path the GraphQL query returns each **BRIDGE**
