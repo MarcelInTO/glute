@@ -150,3 +150,41 @@ func emptyRowAt(t *tview.Table, cols, at int) {
 		t.SetCell(1, i, cell)
 	}
 }
+
+// link is the Reference an id cell carries: the page it opens. It lives in
+// the Reference because tcell has no getter for a style's URL, and a click
+// needs to find it (urlAt). Flexible columns keep a string there instead
+// (see nameCell); an id column is never flexible, so the two don't meet.
+type link struct{ url string }
+
+// linkCell is a right-aligned, content-sized id cell that links to url: it's
+// underlined and carries a terminal hyperlink (OSC 8), which a terminal that
+// supports them opens on a modifier-click, on the user's own machine even
+// with glute running over SSH. It also holds url as its Reference, so glute
+// can open it on a plain click (see browser.go). With no url, or no text to
+// click, it's just curNumCell.
+func linkCell(text, url string) *tview.TableCell {
+	c := curNumCell(text)
+	if url == "" || text == "" {
+		return c
+	}
+	c.SetStyle(c.Style.Underline(true).Url(url))
+	c.SetReference(link{url})
+	return c
+}
+
+// urlAt returns the link on the cell at screen position (x, y) of t, if that
+// cell is a linkCell. CellAt counts the scroll offset, so it's right on a
+// scrolled table.
+func urlAt(t *tview.Table, x, y int) (string, bool) {
+	row, col := t.CellAt(x, y)
+	if row < 0 || col < 0 {
+		return "", false
+	}
+	if cell := t.GetCell(row, col); cell != nil {
+		if l, ok := cell.Reference.(link); ok {
+			return l.url, true
+		}
+	}
+	return "", false
+}

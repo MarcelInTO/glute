@@ -68,7 +68,7 @@ var detailBackground = tcell.NewRGBColor(0x26, 0x26, 0x26)
 
 // detailLegend explains the timeline's glyphs and, last, how to close the
 // view: the footer says so too, but a hint outside the panel is easy to miss.
-const detailLegend = "[silver]░[-] queued  [white]█[-] ran  [white]━[-] pipeline    [aqua]Esc[-]/[aqua]q[-] close "
+const detailLegend = "[silver]░[-] queued  [white]█[-] ran  [white]━[-] pipeline    [aqua]o[-] GitLab  [aqua]Esc[-]/[aqua]q[-] close "
 
 // detailInset is how far the modal is inset from each screen edge: about a
 // twelfth of the width and an eighth of the height, so enough of the tab shows
@@ -210,7 +210,7 @@ func (v *detailView) show(tree gitlab.ActivePipeline, err error) {
 				queued = offsetText(r.queued)
 			}
 		}
-		t.SetCell(row, detColID, curNumCell(pipelineIDText(r.id)))
+		t.SetCell(row, detColID, linkCell(pipelineIDText(r.id), r.url))
 		t.SetCell(row, detColName, name)
 		t.SetCell(row, detColStatus, curStatusCell(r.status))
 		t.SetCell(row, detColQueued, curNumCell(queued))
@@ -243,8 +243,25 @@ func (v *detailView) setTitle(p gitlab.Pipeline) {
 	if p.Status != "" {
 		status = fmt.Sprintf(" · [#%06x]%s[-]", statusColor(p.Status).Hex(), p.Status)
 	}
-	v.frame.SetTitle(fmt.Sprintf(" Pipeline #%d · %s · %s%s ",
-		p.ID, tview.Escape(format.Base(p.ProjectPath)), tview.Escape(displayRef(p.Ref)), status))
+	// The "#N" is a terminal hyperlink too (a style tag's URL field), like
+	// the id cells; only a modifier-click reaches it, as a title isn't a
+	// cell glute's own click handling looks at — `o` covers that.
+	id := fmt.Sprintf("#%d", p.ID)
+	if p.WebURL != "" && !strings.ContainsAny(p.WebURL, "[]") {
+		id = "[:::" + p.WebURL + "]" + id + "[:::-]"
+	}
+	v.frame.SetTitle(fmt.Sprintf(" Pipeline %s · %s · %s%s ",
+		id, tview.Escape(format.Base(p.ProjectPath)), tview.Escape(displayRef(p.Ref)), status))
+}
+
+// selectedURL is the GitLab page for the selected row: the pipeline's on a
+// pipeline row, the job's own on a job row. Empty when unknown.
+func (v *detailView) selectedURL() string {
+	row, _ := v.table.GetSelection()
+	if i := row - 1; i >= 0 && i < len(v.rows) {
+		return v.rows[i].url
+	}
+	return ""
 }
 
 // showInfo puts the selected row's detail on the bottom line: the full project

@@ -105,7 +105,7 @@ func newCurrentView(aliases map[string]string) *currentView {
 func finishedTitle(focused bool) string {
 	const base = "Recently finished pipelines · newest first"
 	if focused {
-		return base + " · Enter or click opens · f back"
+		return base + " · Enter or click opens · o GitLab · f back"
 	}
 	return base + " · f to select"
 }
@@ -140,6 +140,23 @@ func (v *currentView) pressAt(x, y int) {
 	case v.table.InRect(x, y):
 		v.finishedActive = false
 	}
+}
+
+// selectedURL is the GitLab page for the selected row of whichever panel has
+// the keyboard: a finished pipeline's, or a tree row's — a pipeline's page, or
+// on a job row the job's own (its log, which is where "why did it fail" goes
+// next). Empty when there's no row or no known page.
+func (v *currentView) selectedURL() string {
+	if v.finishedActive {
+		row, _ := v.finished.table.GetSelection()
+		p, _ := v.finishedAt(row)
+		return p.WebURL
+	}
+	row, _ := v.table.GetSelection()
+	if i := row - 1; i >= 0 && i < len(v.rows) {
+		return v.rows[i].url
+	}
+	return ""
 }
 
 // finishedAt returns the pipeline on a finished-panel table row (1-based;
@@ -211,6 +228,7 @@ type curRow struct {
 	queued   time.Duration // job's wait for a runner (job rows only), for the detail view
 	progress string
 	path     string // full project path, for the footer reveal
+	url      string // the row's GitLab page: the pipeline's, or on a job row the job's own
 }
 
 // live reports whether this row's TIME still ticks (i.e. it hasn't finished).
@@ -260,7 +278,7 @@ func (v *currentView) update(s gitlab.Snapshot) {
 		default:
 			name.SetTextColor(tcell.ColorSilver)
 		}
-		t.SetCell(row, curColID, curNumCell(pipelineIDText(r.id)))
+		t.SetCell(row, curColID, linkCell(pipelineIDText(r.id), r.url))
 		t.SetCell(row, curColName, name)
 		t.SetCell(row, curColStatus, curStatusCell(r.status))
 		t.SetCell(row, curColUser, curTextCell(format.Trunc(r.user, 16)))
@@ -335,6 +353,7 @@ func flattenActive(aps []gitlab.ActivePipeline) []curRow {
 			duration: ap.Duration,
 			progress: progress,
 			path:     ap.ProjectPath,
+			url:      ap.WebURL,
 		})
 		for _, j := range ap.Jobs {
 			rows = append(rows, curRow{
@@ -348,6 +367,7 @@ func flattenActive(aps []gitlab.ActivePipeline) []curRow {
 				duration: j.Duration,
 				queued:   j.Queued,
 				path:     ap.ProjectPath,
+				url:      j.WebURL,
 			})
 		}
 		for _, c := range ap.Children {
@@ -397,7 +417,7 @@ func fillFinishedPipelines(p *panelTable, pipes []gitlab.Pipeline) {
 	for i, pipe := range pipes {
 		r := i + 1
 		p.addPath(pipe.ProjectPath)
-		p.table.SetCell(r, colID, curNumCell(pipelineIDText(pipe.ID)))
+		p.table.SetCell(r, colID, linkCell(pipelineIDText(pipe.ID), pipe.WebURL))
 		p.table.SetCell(r, 1, nameCell(format.Base(pipe.ProjectPath)))
 		p.table.SetCell(r, 2, nameCell(displayRef(pipe.Ref)))
 		p.table.SetCell(r, 3, statusCell(pipe.Status))

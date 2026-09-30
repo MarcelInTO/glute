@@ -318,6 +318,31 @@ Keep it CGO-free so cross-compilation stays trivial.
   wall-clock total and names how much was cut (`┆ cuts 94:16:46 idle`). QUEUED,
   START and TIME stay real numbers. The axis stays linear when it's too narrow
   for a cut to leave room.
+- **Pipeline ids are links to GitLab** (`browser.go`, `linkCell`). Users often
+  run glute in a terminal on their desktop, and sometimes over SSH on a box
+  with no browser at all, so two mechanisms cover each other. (1) Every
+  pipeline id (tree, finished panel, detail view, and the detail title's `#N`)
+  is underlined and carries an OSC 8 terminal hyperlink (tcell `Style.Url`).
+  The user's *own* terminal opens it, on their own machine, which is what
+  works over SSH. glute captures the mouse, so terminals only take a
+  modifier-click as theirs (Cmd, Ctrl or Shift, depending on the terminal).
+  tmux passes OSC 8 only with `set -as terminal-features ",*:hyperlinks"`
+  (tmux 3.4+). (2) A plain click on an id, or `o` on the selected row, has
+  glute launch the default browser itself: `xdg-open`, `open`, or `rundll32
+  url.dll,FileProtocolHandler` (not `cmd /c start`, whose quoting breaks on
+  `&`). The opener runs with no stdio, because the terminal is in raw mode and
+  xdg-open's helpers print, and it isn't waited on. glute doesn't launch
+  anything where the browser wouldn't reach the user (`browserUnreachable`:
+  SSH env vars, or on Linux/BSD no `DISPLAY`/`WAYLAND_DISPLAY`). Instead the
+  footer shows the URL and points at the modifier-click. `o` on a **job** row
+  opens the job's own page (its log), since that's the next step after "which
+  job failed". The URLs come from GitLab: REST `web_url`, or GraphQL's
+  host-relative `Pipeline.path`/`CiJob.webPath` joined to the instance's
+  **origin** (`webOrigin`), not its full URL, because those paths already
+  include any relative URL root. Checked against REST `web_url` on the
+  instance for a child pipeline and a job. The id cell keeps its URL in its
+  `Reference` (a `link`), since tcell has no getter for a style's URL and a
+  click has to find it (`urlAt`).
 - **Which Current panel owns the keyboard** (`currentView.finishedActive`) is
   set only by intent: the `f` key, or a mouse press on a panel. It is never set
   from focus events, because tview moves focus incidentally too.

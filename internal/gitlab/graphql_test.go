@@ -32,6 +32,7 @@ const samplePipelinePayload = `{
     "createdAt": "2026-07-14T13:00:00Z",
     "startedAt": "2026-07-14T13:00:05Z",
     "duration": 42,
+    "path": "/grp/app/-/pipelines/999",
     "user": { "username": "alice" },
     "jobs": {
       "pageInfo": { "hasNextPage": false, "endCursor": "" },
@@ -39,7 +40,7 @@ const samplePipelinePayload = `{
         {"id":"gid://gitlab/Ci::Build/100","name":"build","kind":"BUILD","status":"SUCCESS",
          "createdAt":"2026-07-14T13:00:00Z","startedAt":"2026-07-14T13:00:05Z","finishedAt":"2026-07-14T13:00:20Z",
          "duration":15,"queuedDuration":2,"stage":{"name":"build"},"tags":["linux","docker"],"needs":{"nodes":[]},
-         "runnerManager":{"runner":{"description":"linux-docker-1"}},"downstreamPipeline":null},
+         "runnerManager":{"runner":{"description":"linux-docker-1"}},"webPath":"/grp/app/-/jobs/100","downstreamPipeline":null},
         {"id":"gid://gitlab/Ci::Build/101","name":"test","kind":"BUILD","status":"RUNNING",
          "startedAt":"2026-07-14T13:00:25Z","stage":{"name":"test"},"needs":{"nodes":[{"name":"build"}]},
          "runnerManager":{"runner":{"description":"linux-docker-2"}},"downstreamPipeline":null},
@@ -59,7 +60,7 @@ func TestCollectPipelineNodeMapsJobsAndChildren(t *testing.T) {
 	}
 	pn := resp.Project.Pipeline
 
-	pipe := mapGQLPipeline(pn, "grp/app")
+	pipe := mapGQLPipeline(pn, "grp/app", "https://gl.example")
 	if pipe.ID != 999 || pipe.Status != StatusRunning || pipe.Ref != "main" {
 		t.Errorf("pipeline mapped wrong: %+v", pipe)
 	}
@@ -69,8 +70,12 @@ func TestCollectPipelineNodeMapsJobsAndChildren(t *testing.T) {
 	if pipe.User != "alice" {
 		t.Errorf("pipeline user = %q, want alice", pipe.User)
 	}
+	// Page paths come host-relative and are joined to the instance origin.
+	if pipe.WebURL != "https://gl.example/grp/app/-/pipelines/999" {
+		t.Errorf("pipeline web URL = %q", pipe.WebURL)
+	}
 
-	jobs, children := collectPipelineNode(pn, "grp/app", statusSet(jobFetchScopes))
+	jobs, children := collectPipelineNode(pn, "grp/app", "https://gl.example", statusSet(jobFetchScopes))
 
 	// BRIDGE and the CANCELED (out-of-scope) job are excluded → only build, test.
 	if jobNames(jobs) != "build,test" {
@@ -81,6 +86,9 @@ func TestCollectPipelineNodeMapsJobsAndChildren(t *testing.T) {
 		build.Runner != "linux-docker-1" || build.Status != StatusSuccess ||
 		build.Duration != 15*time.Second || build.Queued != 2*time.Second || len(build.Needs) != 0 {
 		t.Errorf("build job mapped wrong: %+v", build)
+	}
+	if build.WebURL != "https://gl.example/grp/app/-/jobs/100" || testJob.WebURL != "" {
+		t.Errorf("job web URLs = %q, %q; want the build's joined to the origin, none for the test job", build.WebURL, testJob.WebURL)
 	}
 	if len(build.Tags) != 2 || build.Tags[0] != "linux" || build.Tags[1] != "docker" {
 		t.Errorf("build job tags = %v, want [linux docker]", build.Tags)
@@ -94,5 +102,23 @@ func TestCollectPipelineNodeMapsJobsAndChildren(t *testing.T) {
 	// is not a job row.
 	if len(children) != 1 || children[0].projectPath != "grp/deploy" || children[0].iid != 77 {
 		t.Errorf("children = %+v, want one {grp/deploy, 77}", children)
+	}
+}
+
+func TestWebOrigin(t *testing.T) {
+	cases := map[string]string{
+		"https://studio.wevr.com":    "https://studio.wevr.com",
+		"https://studio.wevr.com/":   "https://studio.wevr.com",
+		"https://example.com/gitlab": "https://example.com", // GraphQL paths already carry the relative root
+		"http://localhost:8080/":     "http://localhost:8080",
+		"not a url":                  "not a url",
+	}
+	for in, want := range cases {
+		if got := webOrigin(in); got != want {
+			t.Errorf("webOrigin(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if webURL("https://x", "") != "" || webURL("", "/p") != "" {
+		t.Error("webURL should be empty without both an origin and a path")
 	}
 }

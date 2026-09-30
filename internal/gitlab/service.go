@@ -71,11 +71,11 @@ func SampleSnapshot() Snapshot {
 	}
 
 	recent := []Pipeline{
-		{ID: 98, ProjectPath: "acme/payments/api", Ref: "main", Status: StatusSuccess,
+		{ID: 98, ProjectPath: "acme/payments/api", Ref: "main", Status: StatusSuccess, WebURL: url("acme/payments/api", 98),
 			Source: "push", User: "jchen", Finished: now.Add(-12 * time.Minute), Duration: 5*time.Minute + 40*time.Second},
-		{ID: 97, ProjectPath: "acme/platform/gateway", Ref: "feat/rate-limit", Status: StatusFailed,
+		{ID: 97, ProjectPath: "acme/platform/gateway", Ref: "feat/rate-limit", Status: StatusFailed, WebURL: url("acme/platform/gateway", 97),
 			Source: "merge_request_event", User: "priya", Finished: now.Add(-38 * time.Minute), Duration: 3*time.Minute + 12*time.Second},
-		{ID: 96, ProjectPath: "acme/payments/web", Ref: "main", Status: StatusSuccess,
+		{ID: 96, ProjectPath: "acme/payments/web", Ref: "main", Status: StatusSuccess, WebURL: url("acme/payments/web", 96),
 			Source: "push", User: "amir", Finished: now.Add(-2 * time.Hour), Duration: 7 * time.Minute},
 	}
 
@@ -135,7 +135,7 @@ func SampleSnapshot() Snapshot {
 			},
 			Children: []ActivePipeline{
 				{
-					Pipeline: Pipeline{ID: 201, ProjectPath: "acme/payments/deploy", Ref: "main",
+					Pipeline: Pipeline{ID: 201, ProjectPath: "acme/payments/deploy", Ref: "main", WebURL: url("acme/payments/deploy", 201),
 						Status: StatusPending, Source: sourceParentPipeline, User: "jchen", Created: now.Add(-30 * time.Second)},
 					Jobs: []Job{
 						{ID: 5201, Name: "deploy-staging", Stage: "deploy", Status: StatusPending,
@@ -210,6 +210,19 @@ func SampleSnapshot() Snapshot {
 		TagStats:         tagStats,
 	}
 
+	// Every sample job links to its page, as real ones do (both fetch paths
+	// carry it), so `o` on a job row has somewhere to go under --sample.
+	var linkJobs func(aps []ActivePipeline)
+	linkJobs = func(aps []ActivePipeline) {
+		for i := range aps {
+			for j := range aps[i].Jobs {
+				aps[i].Jobs[j].WebURL = sampleJobURL(aps[i].Jobs[j])
+			}
+			linkJobs(aps[i].Children)
+		}
+	}
+	linkJobs(current)
+
 	return Snapshot{
 		Projects:         3,
 		Current:          current,
@@ -246,6 +259,7 @@ func SampleTrees(s Snapshot) map[int64]ActivePipeline {
 		job := func(id int64, stage, name string, st Status, runner string, queued, from, dur time.Duration, needs ...string) Job {
 			j := Job{ID: id, Name: name, Stage: stage, Status: st, ProjectPath: p.ProjectPath, Ref: p.Ref,
 				PipelineID: p.ID, Runner: runner, Needs: needs, Created: p.Created}
+			j.WebURL = sampleJobURL(j)
 			if from >= 0 {
 				j.Queued, j.Started, j.Finished, j.Duration = queued, start.Add(from), start.Add(from+dur), dur
 			}
@@ -262,11 +276,13 @@ func SampleTrees(s Snapshot) map[int64]ActivePipeline {
 				job(9804, "test", "integration-tests", StatusSuccess, "shared-linux-01", ms(0, 8), ms(1, 18), ms(3, 40), "compile"),
 			})
 			child := Pipeline{ID: 202, ProjectPath: "acme/payments/deploy", Ref: "main", Status: StatusSuccess,
+				WebURL: "https://gitlab.example.com/acme/payments/deploy/-/pipelines/202",
 				Source: sourceParentPipeline, User: p.User, Created: start.Add(ms(5, 0)), Started: start.Add(ms(5, 3)),
 				Finished: p.Finished, Duration: ms(0, 37)}
 			tree.Children = []ActivePipeline{{
 				Pipeline: child,
 				Jobs: []Job{{ID: 9901, Name: "deploy-staging", Stage: "deploy", Status: StatusSuccess,
+					WebURL:      "https://gitlab.example.com/acme/payments/deploy/-/jobs/9901",
 					ProjectPath: child.ProjectPath, Ref: child.Ref, PipelineID: child.ID, Runner: "shared-linux-01",
 					Created: child.Created, Queued: ms(0, 3), Started: child.Started, Finished: child.Finished, Duration: ms(0, 37)}},
 			}}
@@ -288,6 +304,11 @@ func SampleTrees(s Snapshot) map[int64]ActivePipeline {
 		trees[p.ID] = tree
 	}
 	return trees
+}
+
+// sampleJobURL is a sample job's page, shaped like GitLab's.
+func sampleJobURL(j Job) string {
+	return fmt.Sprintf("https://gitlab.example.com/%s/-/jobs/%d", j.ProjectPath, j.ID)
 }
 
 // scaleWindowStats derives sample history for a shorter window from the full

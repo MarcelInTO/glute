@@ -33,6 +33,13 @@ const (
 // GraphQL call per pipeline in the tree, a level of the tree at a time.
 const detailFetchTimeout = time.Minute
 
+// How long a footer notice (see flash) stays up: long enough to read a short
+// one, and for one carrying a URL, long enough to copy it out.
+const (
+	noticeShort = 4 * time.Second
+	noticeLong  = 15 * time.Second
+)
+
 const helpText = `glute — keys
 
   Tab / Shift-Tab    switch tabs
@@ -41,6 +48,7 @@ const helpText = `glute — keys
   f                  move between the tree and the finished list
   Enter / click      open a finished pipeline's jobs and timeline
   Esc / q            close it
+  o / click an id    open the selected pipeline (or job) in GitLab
   t                  cycle the history window (1d / 7d / 30d)
   r                  refresh now
   ?                  toggle this help
@@ -90,6 +98,14 @@ type Dashboard struct {
 	lastErr    error
 	refreshing bool
 	hoverPath  string // full project path under the mouse, shown in the footer
+	// notice is a transient footer message (see flash), shown in place of the
+	// status until noticeUntil; the one-second tick clears it.
+	notice      string
+	noticeUntil time.Time
+	// opener launches a URL in the system browser and unreachable says why it
+	// can't reach the user (see browser.go); fields so tests can stand in.
+	opener      func(url string) error
+	unreachable func() string
 	// dismissing is set by the press that closed the detail view, so the
 	// release (and the click tview would build from it) that finish the same
 	// gesture are swallowed rather than landing on the tab beneath.
@@ -137,22 +153,24 @@ func NewDashboard(svc gitlab.Service, opts Options) *Dashboard {
 	outer.AddPage(pageDetail, detail.root, true, false)
 
 	d := &Dashboard{
-		app:       tview.NewApplication(),
-		outer:     outer,
-		pages:     pages,
-		header:    header,
-		footer:    footer,
-		help:      help,
-		current:   current,
-		work:      work,
-		infra:     infra,
-		detail:    detail,
-		ctx:       context.Background(),
-		svc:       svc,
-		opts:      opts,
-		tabs:      []string{pageCurrent, pageWork, pageInfra},
-		tabLabels: []string{"Current", "Work", "Infrastructure"},
-		trigger:   make(chan struct{}, 1),
+		app:         tview.NewApplication(),
+		outer:       outer,
+		pages:       pages,
+		header:      header,
+		footer:      footer,
+		help:        help,
+		current:     current,
+		work:        work,
+		infra:       infra,
+		detail:      detail,
+		ctx:         context.Background(),
+		opener:      openInBrowser,
+		unreachable: browserUnreachable,
+		svc:         svc,
+		opts:        opts,
+		tabs:        []string{pageCurrent, pageWork, pageInfra},
+		tabLabels:   []string{"Current", "Work", "Infrastructure"},
+		trigger:     make(chan struct{}, 1),
 	}
 
 	// Selecting a row in the Current tree reveals that row's full project path
@@ -239,6 +257,9 @@ func (d *Dashboard) onKey(ev *tcell.EventKey) *tcell.EventKey {
 		case ev.Key() == tcell.KeyEscape || ev.Rune() == 'q':
 			d.closeDetail()
 			return nil
+		case ev.Rune() == 'o':
+			d.openLink(d.detail.selectedURL())
+			return nil
 		case ev.Key() == tcell.KeyCtrlC:
 			d.app.Stop()
 			return nil
@@ -272,6 +293,11 @@ func (d *Dashboard) onKey(ev *tcell.EventKey) *tcell.EventKey {
 		if d.tabs[d.active] == pageCurrent {
 			d.app.SetFocus(d.current.toggleFocusTarget())
 			d.syncCurrentFooter()
+			return nil
+		}
+	case 'o':
+		if d.tabs[d.active] == pageCurrent {
+			d.openLink(d.current.selectedURL())
 			return nil
 		}
 	case '?':
@@ -414,6 +440,35 @@ func (d *Dashboard) openDetail(p gitlab.Pipeline) {
 	}()
 }
 
+// openLink opens a pipeline's or job's GitLab page in the system browser, and
+// says in the footer what happened. Where a browser glute launched couldn't
+// reach the user (over SSH, or with no desktop), it doesn't try: it shows the
+// URL, and points at the id's terminal hyperlink, which the user's own
+// terminal can open on their own machine.
+func (d *Dashboard) openLink(url string) {
+	switch why := d.unreachable(); {
+	case url == "":
+		d.flash("[yellow]no GitLab link for this row[-]", noticeShort)
+	case why != "":
+		d.flash(fmt.Sprintf("[aqua]%s[-]  [silver](%s: Cmd- or Ctrl-click the id, with Shift if needed, to open it on your machine)[-]",
+			tview.Escape(url), why), noticeLong)
+	default:
+		if err := d.opener(url); err != nil {
+			log.Printf("opening %s: %v", url, err)
+			d.flash(fmt.Sprintf("[red]couldn't start a browser (%s)[-]  [aqua]%s[-]",
+				tview.Escape(err.Error()), tview.Escape(url)), noticeLong)
+			return
+		}
+		d.flash("[silver]opened in your browser:[-] [aqua]"+tview.Escape(url)+"[-]", noticeShort)
+	}
+}
+
+// flash shows msg in the footer for d, in place of the status line.
+func (d *Dashboard) flash(msg string, dur time.Duration) {
+	d.notice, d.noticeUntil = msg, time.Now().Add(dur)
+	d.updateFooter()
+}
+
 // closeDetail hides the detail view and hands the keyboard back to the panel
 // it was opened from.
 func (d *Dashboard) closeDetail() {
@@ -456,6 +511,13 @@ func (d *Dashboard) onMouse(event *tcell.EventMouse, action tview.MouseAction) (
 		// that follows it, so a click on the margin would never arrive. A move
 		// reaching the tab is harmless.
 		if d.detail.contains(x, y) || action == tview.MouseMove {
+			// A plain click on a pipeline id opens it in the browser.
+			if action == tview.MouseLeftClick {
+				if url, ok := urlAt(d.detail.table, x, y); ok {
+					d.openLink(url)
+					return nil, action
+				}
+			}
 			return event, action
 		}
 		if action == tview.MouseLeftDown {
@@ -478,9 +540,21 @@ func (d *Dashboard) onMouse(event *tcell.EventMouse, action tview.MouseAction) (
 	// consumed, since the table would otherwise re-select the same row; so is a
 	// click on the panel that misses every row, which tview would turn into a
 	// selection of row -1 and then quietly reset to the top.
+	//
+	// A click on a pipeline id, in either panel, opens that pipeline in the
+	// browser instead (the id is underlined as a link); consumed, so the tree
+	// doesn't also move its selection.
 	if d.tabs[d.active] == pageCurrent {
 		if action == tview.MouseLeftDown {
 			d.current.pressAt(x, y)
+		}
+		if action == tview.MouseLeftClick {
+			for _, t := range []*tview.Table{d.current.finished.table, d.current.table} {
+				if url, ok := urlAt(t, x, y); ok && t.InRect(x, y) {
+					d.openLink(url)
+					return nil, action
+				}
+			}
 		}
 		if action == tview.MouseLeftClick && d.current.finished.table.InRect(x, y) {
 			if idx, ok := d.current.finished.rowAt(x, y); ok {
@@ -608,8 +682,16 @@ func (d *Dashboard) updateFooter() {
 		// The detail view shows its own row's path; the footer carries only
 		// the status and the keys that work while it's up.
 		path = ""
-		hints = "[silver]↑/↓ scroll · Esc/q close · r refresh[-]"
+		hints = "[silver]↑/↓ scroll · o GitLab · Esc/q close · r refresh[-]"
 	}
+
+	// A notice (an opened link, or the URL that couldn't be) outranks both the
+	// hover path and the status until it expires.
+	if d.notice != "" && time.Now().Before(d.noticeUntil) {
+		d.footer.SetText(" " + d.notice + "    " + hints)
+		return
+	}
+	d.notice = ""
 
 	// While hovering a row, reveal that project's full path.
 	if path != "" {

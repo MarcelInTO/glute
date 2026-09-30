@@ -191,7 +191,7 @@ func TestCollectPipelineNodeMapsRetried(t *testing.T) {
 	if err := json.Unmarshal([]byte(payload), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	jobs, children := collectPipelineNode(resp.Project.Pipeline, "g/app", nil)
+	jobs, children := collectPipelineNode(resp.Project.Pipeline, "g/app", "", nil)
 	if len(jobs) != 2 || !jobs[0].Retried || jobs[1].Retried {
 		t.Errorf("jobs' retried flags = %+v, want [true false]", jobs)
 	}

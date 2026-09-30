@@ -184,6 +184,9 @@ func mergeRoot(root, fetched Pipeline) Pipeline {
 	out := root
 	out.ID = fetched.ID
 	out.Status = fetched.Status
+	if out.WebURL == "" {
+		out.WebURL = fetched.WebURL
+	}
 	if fetched.Ref != "" {
 		out.Ref = fetched.Ref
 	}

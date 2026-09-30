@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -27,9 +28,10 @@ const maxJobPages = 50
 // client and a small GraphQL client (used only where REST can't reach, e.g. job
 // needs: dependencies).
 type Client struct {
-	api *glab.Client
-	gql *gqlClient
-	url string
+	api    *glab.Client
+	gql    *gqlClient
+	url    string
+	origin string // scheme://host of url, which GraphQL's page paths are relative to
 }
 
 // NewClient builds a GitLab API client for the given instance URL and token.
@@ -53,7 +55,29 @@ func NewClient(url, token, caCertPath string) (*Client, error) {
 		return nil, fmt.Errorf("creating GitLab client: %w", err)
 	}
 	// The GraphQL client reuses the same CA-aware HTTP client (nil → default).
-	return &Client{api: api, gql: newGQLClient(url, token, httpClient), url: url}, nil
+	return &Client{api: api, gql: newGQLClient(url, token, httpClient), url: url, origin: webOrigin(url)}, nil
+}
+
+// webOrigin is the scheme://host of an instance URL. GraphQL returns web pages
+// as paths from the host root (Pipeline.path, CiJob.webPath:
+// "/grp/app/-/pipelines/9"), and those already include any relative URL root
+// the instance is served under — so they're joined to the origin, never to
+// the full instance URL, which would double such a prefix.
+func webOrigin(instance string) string {
+	u, err := neturl.Parse(instance)
+	if err != nil || u.Host == "" {
+		return strings.TrimRight(instance, "/")
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// webURL joins a GraphQL page path to the instance origin, or returns "" when
+// there's no path (a field the instance didn't return).
+func webURL(origin, path string) string {
+	if path == "" || origin == "" {
+		return ""
+	}
+	return origin + path
 }
 
 // WhoAmI returns the username for the authenticated token, or an error if the
@@ -204,6 +228,7 @@ const pipelineJobsQuery = `query PipelineJobs($path: ID!, $iid: ID!, $cursor: St
       startedAt
       finishedAt
       duration
+      path
       user { username }
       jobs(first: 100, after: $cursor) {
         pageInfo { hasNextPage endCursor }
@@ -222,6 +247,7 @@ const pipelineJobsQuery = `query PipelineJobs($path: ID!, $iid: ID!, $cursor: St
           tags
           needs { nodes { name } }
           runnerManager { runner { description } }
+          webPath
           downstreamPipeline { iid project { fullPath } }
         }
       }
@@ -254,6 +280,7 @@ type gqlJobNode struct {
 			Description string `json:"description"`
 		} `json:"runner"`
 	} `json:"runnerManager"`
+	WebPath            string `json:"webPath"`
 	DownstreamPipeline *struct {
 		IID     string `json:"iid"`
 		Project struct {
@@ -270,6 +297,7 @@ type gqlPipelineNode struct {
 	StartedAt  *time.Time `json:"startedAt"`
 	FinishedAt *time.Time `json:"finishedAt"`
 	Duration   *float64   `json:"duration"`
+	Path       string     `json:"path"`
 	User       *struct {
 		Username string `json:"username"`
 	} `json:"user"`
@@ -329,10 +357,10 @@ func (c *Client) FetchPipelineJobTree(ctx context.Context, projectPath string, i
 		}
 		pn := resp.Project.Pipeline
 		if !gotPipe {
-			pipe = mapGQLPipeline(pn, projectPath)
+			pipe = mapGQLPipeline(pn, projectPath, c.origin)
 			gotPipe = true
 		}
-		js, kids := collectPipelineNode(pn, projectPath, scopeSet)
+		js, kids := collectPipelineNode(pn, projectPath, c.origin, scopeSet)
 		jobs = append(jobs, js...)
 		children = append(children, kids...)
 		if !pn.Jobs.PageInfo.HasNextPage || pn.Jobs.PageInfo.EndCursor == "" {
@@ -344,10 +372,11 @@ func (c *Client) FetchPipelineJobTree(ctx context.Context, projectPath string, i
 }
 
 // collectPipelineNode maps one fetched pipeline node's jobs into domain Jobs
-// (BUILD jobs only, tagged with projectPath and filtered to scopeSet) and its
-// downstream child pipeline refs (from BRIDGE jobs). Pure, so it's unit-tested
-// against a captured payload without touching the network.
-func collectPipelineNode(pn *gqlPipelineNode, projectPath string, scopeSet map[Status]bool) (jobs []Job, children []childRef) {
+// (BUILD jobs only, tagged with projectPath and filtered to scopeSet, their web
+// pages joined to origin) and its downstream child pipeline refs (from BRIDGE
+// jobs). Pure, so it's unit-tested against a captured payload without touching
+// the network.
+func collectPipelineNode(pn *gqlPipelineNode, projectPath, origin string, scopeSet map[Status]bool) (jobs []Job, children []childRef) {
 	pipelineID := parseGID(pn.ID)
 	for i := range pn.Jobs.Nodes {
 		n := &pn.Jobs.Nodes[i]
@@ -361,7 +390,7 @@ func collectPipelineNode(pn *gqlPipelineNode, projectPath string, scopeSet map[S
 		if strings.EqualFold(n.Kind, "BRIDGE") {
 			continue // bridges aren't job rows; they yielded the child ref above
 		}
-		job := mapGQLJob(n, projectPath, pipelineID)
+		job := mapGQLJob(n, projectPath, origin, pipelineID)
 		if scopeSet != nil && !scopeSet[job.Status] {
 			continue
 		}
@@ -370,10 +399,11 @@ func collectPipelineNode(pn *gqlPipelineNode, projectPath string, scopeSet map[S
 	return jobs, children
 }
 
-func mapGQLPipeline(pn *gqlPipelineNode, projectPath string) Pipeline {
+func mapGQLPipeline(pn *gqlPipelineNode, projectPath, origin string) Pipeline {
 	pipe := Pipeline{
 		ID:          parseGID(pn.ID),
 		ProjectPath: projectPath,
+		WebURL:      webURL(origin, pn.Path),
 		Ref:         pn.Ref,
 		Status:      Status(strings.ToLower(pn.Status)),
 		Created:     derefTime(pn.CreatedAt),
@@ -387,13 +417,14 @@ func mapGQLPipeline(pn *gqlPipelineNode, projectPath string) Pipeline {
 	return pipe
 }
 
-func mapGQLJob(n *gqlJobNode, projectPath string, pipelineID int64) Job {
+func mapGQLJob(n *gqlJobNode, projectPath, origin string, pipelineID int64) Job {
 	j := Job{
 		ID:          parseGID(n.ID),
 		Name:        n.Name,
 		Status:      Status(strings.ToLower(n.Status)),
 		ProjectPath: projectPath,
 		PipelineID:  pipelineID,
+		WebURL:      webURL(origin, n.WebPath),
 		Tags:        n.Tags,
 		Retried:     n.Retried,
 		Created:     derefTime(n.CreatedAt),
