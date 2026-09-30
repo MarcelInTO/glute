@@ -372,8 +372,17 @@ Keep it CGO-free so cross-compilation stays trivial.
   focus, so otherwise nothing shows where ↑/↓ will go. A refresh keeps the
   finished selection on the same **pipeline ID**, not row index, since newly
   finished runs push in on top and Enter would otherwise open a different
-  pipeline. While the panel has the keyboard its scroll offset shifts with the
-  selection, and otherwise it stays pinned to the top. Its key hint sits in the
+  pipeline. The view follows the usual rule for a newest-first list. At the top
+  it stays at the top, so each arrival shows up, and the selection follows its
+  pipeline only as far as the last visible row. (tview scrolls to keep a
+  selection in view, so following it past the edge would pull the view off the
+  top.) Scrolled down, the view holds still: its offset moves with the arrivals,
+  so the rows being read don't shift. Scrolling back to the top resumes
+  following. v0.3.0 held the view still *whenever the panel had the keyboard*,
+  even at the top. That hid every new arrival just above the view, from the
+  first `f`, click or opened pipeline onward, since nothing gives the keyboard
+  back. A short list hides this, because tview ignores a scroll offset when
+  everything fits: the tests use 30 rows. Its key hint sits in the
   panel title and changes with focus, because the footer line is already full at
   common widths. Because the list now scrolls, its hover reveal goes through
   `Table.CellAt`, which counts the scroll offset (`panelTable.rowAt`).

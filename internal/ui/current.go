@@ -173,8 +173,20 @@ func (v *currentView) finishedAt(row int) (gitlab.Pipeline, bool) {
 // pipeline rather than the same row: each refresh can push newly finished
 // pipelines in on top, and a selection left on the row index would slide onto
 // a different pipeline under the user's cursor — the one Enter then opens.
-// While the panel has the keyboard its scroll offset moves with the selected
-// row too, so the list doesn't jump; otherwise it stays pinned to the top.
+//
+// The view follows the usual rule for a newest-first list. At the top — the
+// panel scrolled to its first row, or not the panel with the keyboard, which is
+// always kept there — it stays at the top, so each newly finished pipeline shows
+// up as it arrives. Scrolled down, it holds still instead (the offset moves with
+// the selected row), so the rows being read don't shift under the user; scrolling
+// back to the top resumes following. The view once held still whenever the panel
+// had the keyboard, even at the top, which hid every arrival just above the view
+// from the first `f`, click or opened pipeline on.
+//
+// At the top, the selection follows its pipeline only as far as the last visible
+// row: tview scrolls the view to keep a selection in sight, so following the
+// pipeline past the bottom edge would pull the view off the top. There the
+// highlight stays on the last visible row instead.
 func (v *currentView) updateFinished(pipes []gitlab.Pipeline) {
 	f := v.finished.table
 	prevRow, _ := f.GetSelection()
@@ -196,10 +208,19 @@ func (v *currentView) updateFinished(pipes []gitlab.Pipeline) {
 			}
 		}
 	}
-	if v.finishedActive && hadPrev {
+	if v.finishedActive && hadPrev && prevOffset > 0 {
 		f.SetOffset(max(prevOffset+row-prevRow, 0), 0)
+	} else if visible := finishedVisibleRows(f); visible > 0 {
+		row = min(row, visible) // fillFinishedPipelines has already pinned the view to the top
 	}
 	f.Select(row, 0)
+}
+
+// finishedVisibleRows is how many data rows the finished panel showed when last
+// drawn (its height less the fixed header row), or 0 before its first draw.
+func finishedVisibleRows(t *tview.Table) int {
+	_, _, _, h := t.GetInnerRect()
+	return max(h-1, 0)
 }
 
 // displayRunner maps a runner's full name to its configured short label, or
