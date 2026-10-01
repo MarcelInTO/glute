@@ -240,11 +240,24 @@ func (d *Dashboard) Run() error {
 	return err
 }
 
+// keyRune is the character a key event types, or 0 for any other key. It's
+// what the letter bindings match on, not ev.Rune(): tcell gives a Ctrl-letter
+// key its letter's rune as well (Ctrl-F is KeyCtrlF with the rune 'f'), so
+// matching the rune alone made Ctrl-F switch panels instead of paging down,
+// and Ctrl-Q quit. A Ctrl chord that stays a KeyRune, such as Ctrl-Shift-F
+// under an extended keyboard protocol, isn't typing either.
+func keyRune(ev *tcell.EventKey) rune {
+	if ev.Key() != tcell.KeyRune || ev.Modifiers()&tcell.ModCtrl != 0 {
+		return 0
+	}
+	return ev.Rune()
+}
+
 func (d *Dashboard) onKey(ev *tcell.EventKey) *tcell.EventKey {
 	// While help is open, only our close keys act; everything else goes to it.
 	switch name, _ := d.outer.GetFrontPage(); name {
 	case pageHelp:
-		if ev.Key() == tcell.KeyEscape || ev.Rune() == '?' || ev.Rune() == 'q' {
+		if r := keyRune(ev); ev.Key() == tcell.KeyEscape || r == '?' || r == 'q' {
 			d.hideHelp()
 			return nil
 		}
@@ -254,10 +267,10 @@ func (d *Dashboard) onKey(ev *tcell.EventKey) *tcell.EventKey {
 		// quitting from under it, and the tab keys stay inert while it's up —
 		// everything else scrolls its table.
 		switch {
-		case ev.Key() == tcell.KeyEscape || ev.Rune() == 'q':
+		case ev.Key() == tcell.KeyEscape || keyRune(ev) == 'q':
 			d.closeDetail()
 			return nil
-		case ev.Rune() == 'o':
+		case keyRune(ev) == 'o':
 			d.openLink(d.detail.selectedURL())
 			return nil
 		case ev.Key() == tcell.KeyCtrlC:
@@ -279,7 +292,7 @@ func (d *Dashboard) onKey(ev *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
-	switch ev.Rune() {
+	switch keyRune(ev) {
 	case 'q':
 		d.app.Stop()
 		return nil

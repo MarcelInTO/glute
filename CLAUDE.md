@@ -421,6 +421,11 @@ Keep it CGO-free so cross-compilation stays trivial.
   `master` also reworks focus handling, which the highlight switch depends on.
   `GLUTE_SAMPLE=idle` (`--sample` with nothing running) is how
   `tools/ptydrive/scenarios/idle.txt` reaches that state in the real binary.
+- **Letter bindings match `keyRune(ev)`, never `ev.Rune()`.** tcell gives a
+  Ctrl-letter key its letter's rune as well (Ctrl-F is `KeyCtrlF` with the rune
+  `'f'`), so `onKey` matching the rune alone made Ctrl-F switch panels instead
+  of tview's page-down, Ctrl-T change the window, Ctrl-O open the browser and
+  Ctrl-Q quit. `keyRune` is 0 for anything but plain typing.
 - **Display conventions.** Merge-request pipeline refs
   (`refs/merge-requests/<n>/head|merge`) render as `MR <n>` via `displayRef` (used
   by both the Current tree label and the finished panel); branches/tags pass

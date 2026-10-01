@@ -1,0 +1,27 @@
+# Ctrl and a letter isn't the letter. tcell gives a Ctrl-letter key its
+# letter's rune as well, and glute's bindings once matched on the rune alone:
+# Ctrl-F switched panels instead of paging down, Ctrl-T changed the window,
+# Ctrl-O opened the browser and Ctrl-Q quit. Pinned to the desktop case, so a
+# Ctrl-O that got through would reach the stand-in opener.
+unset SSH_CONNECTION
+unset SSH_CLIENT
+unset SSH_TTY
+env DISPLAY=:99
+opener
+
+expect window last 30d
+key ctrl-f
+expect f to select
+key ctrl-t
+expect window last 30d
+key ctrl-o
+expect-not-opened
+key ctrl-r ctrl-q
+
+# Still running, and the letters themselves still work.
+key t
+expect window last 1d
+key f
+expect Enter or click opens
+key q
+expect-exit
