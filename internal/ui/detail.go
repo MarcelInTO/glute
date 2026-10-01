@@ -123,6 +123,7 @@ func (v *insetView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 
 func newDetailView(aliases map[string]string) *detailView {
 	t := tview.NewTable()
+	guardSelection(t)
 	t.SetFixed(1, 0)
 	t.SetSelectable(true, false)
 	t.SetSelectedStyle(tcell.StyleDefault.Background(tcell.ColorDarkSlateGray).Foreground(tcell.ColorWhite))

@@ -67,6 +67,11 @@ func runDashboard() error {
 	)
 	if dashboardSample {
 		snap := gitlab.SampleSnapshot()
+		if os.Getenv("GLUTE_SAMPLE") == "idle" {
+			// An instance with nothing running, whose Current tree shows only its
+			// placeholder: for the tools/ptydrive scenarios (idle.txt).
+			snap.Current = nil
+		}
 		svc = gitlab.FakeService{Snap: snap, Trees: gitlab.SampleTrees(snap)}
 		title = "sample data"
 	} else {

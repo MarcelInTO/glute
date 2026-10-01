@@ -42,7 +42,13 @@ func renderToText(t *testing.T, d *Dashboard, w, h int) string {
 
 func newSampleDashboard() *Dashboard {
 	snap := gitlab.SampleSnapshot()
-	d := NewDashboard(gitlab.FakeService{Snap: snap}, Options{Title: "sample data"})
+	return newDashboardShowing(gitlab.FakeService{Snap: snap}, snap)
+}
+
+// newDashboardShowing builds a dashboard over svc with snap already rendered,
+// as if its first refresh had landed.
+func newDashboardShowing(svc gitlab.Service, snap gitlab.Snapshot) *Dashboard {
+	d := NewDashboard(svc, Options{Title: "sample data"})
 	d.snapshot = snap
 	d.current.update(snap)
 	d.renderHistory()

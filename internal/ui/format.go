@@ -71,9 +71,11 @@ func pipelineIDText(id int64) string {
 	return strconv.FormatInt(id, 10)
 }
 
-// newTable builds a bordered, non-selectable table with a fixed header row.
+// newTable builds a bordered, non-selectable table with a fixed header row,
+// guarded for when it's made selectable (see guardSelection).
 func newTable(title string) *tview.Table {
 	t := tview.NewTable()
+	guardSelection(t)
 	t.SetSelectable(false, false)
 	t.SetFixed(1, 0)
 	t.SetBorder(true)

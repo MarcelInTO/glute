@@ -405,6 +405,22 @@ Keep it CGO-free so cross-compilation stays trivial.
   panel that populates after an empty render must call `ScrollToBeginning()` after
   (re)filling — see `fillFinishedPipelines` and every Work/Infrastructure fill,
   which all do this.
+- **tview v0.42.0 hangs on ↑/↓ in a selectable `Table` with nothing to select**
+  (issue #1, rivo/tview#1146). Its `Draw` walks the selection past the last row
+  looking for a selectable cell. A movement key's search then stops only on a
+  selectable cell or on that start cell, which is outside the table, so it spins
+  on the UI goroutine. The app freezes, Ctrl-C included, since Ctrl-C is a key
+  event on the same loop. The Current tree's `(nothing running)` is such a table
+  (its blanks are non-selectable). The finished list's `(none)` and the detail
+  view's placeholders aren't, but only by accident: their rows keep a selectable
+  blank cell. `guardSelection` (`selectguard.go`, installed by `newTable` and on
+  the detail table) drops the movement keys while the selection is outside the
+  table. Clamping the selection after a refill wouldn't work, because the next
+  draw parks it again. Upstream fixed it in 051ada1, which no tagged release has
+  yet. Drop the guard with a tview upgrade that has it, in a change of its own:
+  `master` also reworks focus handling, which the highlight switch depends on.
+  `GLUTE_SAMPLE=idle` (`--sample` with nothing running) is how
+  `tools/ptydrive/scenarios/idle.txt` reaches that state in the real binary.
 - **Display conventions.** Merge-request pipeline refs
   (`refs/merge-requests/<n>/head|merge`) render as `MR <n>` via `displayRef` (used
   by both the Current tree label and the finished panel); branches/tags pass

@@ -1,0 +1,17 @@
+# Nothing running (GLUTE_SAMPLE=idle): the Current tree is a header over
+# "(nothing running)" with nothing in it to select, and it has the keyboard.
+# tview v0.42.0 spun forever on a movement key there, which froze glute, Ctrl-C
+# and all (issue #1); guardSelection drops those keys instead.
+env GLUTE_SAMPLE=idle
+
+expect (nothing running)
+key down up pgdn pgup j k ctrl-b
+
+# Still answering: the help opens and closes, and q quits.
+key ?
+expect switch tabs
+key esc
+expect-not switch tabs
+expect (nothing running)
+key q
+expect-exit

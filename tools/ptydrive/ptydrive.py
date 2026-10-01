@@ -29,7 +29,7 @@ Actions and checks (glute starts at the first one):
     wait SECONDS         let it run
     settle SECONDS       how long each key/click/wheel waits after (default 0.6)
     key NAME...          press keys: a single character, or enter esc tab backtab
-                         up down left right pgup pgdn home end ctrl-c
+                         up down left right pgup pgdn home end ctrl-b ctrl-c
     click COL ROW        left click (press and release)
     wheel COL ROW up|down
     show [FROM [TO]]     print screen rows (all by default; silent with -q)
@@ -66,7 +66,7 @@ KEYS = {
     "enter": "\r", "esc": "\x1b", "tab": "\t", "backtab": "\x1b[Z",
     "up": "\x1b[A", "down": "\x1b[B", "right": "\x1b[C", "left": "\x1b[D",
     "pgup": "\x1b[5~", "pgdn": "\x1b[6~", "home": "\x1b[H", "end": "\x1b[F",
-    "ctrl-c": "\x03",
+    "ctrl-b": "\x02", "ctrl-c": "\x03",
 }
 
 SETUP = {"size", "env", "unset", "opener"}
