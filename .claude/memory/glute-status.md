@@ -154,6 +154,14 @@ bucket's zip was re-downloaded and its `glute.exe version` run on Windows.
 v0.3.1 (2026-09-30, on `099af4f`) made the finished panel follow new arrivals
 again at the top. v0.3.2 fixes the issue #1 hang, and Ctrl and a letter no
 longer triggers that letter's shortcut (Ctrl-F now pages down).
+As of 2026-10-03: **v0.3.3 released** (tag on `26217ca`, both sides green
+first, checked the same way). It adds a RUNNER column to the finished-pipeline
+detail view, asked for to trace slow jobs to their runners. The view's width now
+goes to text first (the name and runner, both flexible), then the timeline,
+which has a 12-cell floor. In Marcel's own config, one unaliased runner
+("Cassatt WSL Linux docker") sets RUNNER's width; an alias for it would win back
+room at 120 columns. Another session had released v0.3.2 in between, so the
+runner change was rebased onto it before tagging.
 
 **Why:** Records live status and next-steps that aren't obvious from the code.
 
