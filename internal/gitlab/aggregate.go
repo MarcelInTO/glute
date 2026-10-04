@@ -48,18 +48,82 @@ func runningPipelines(pipes []Pipeline) []Pipeline {
 	return out
 }
 
-func recentPipelines(pipes []Pipeline, since time.Time) []Pipeline {
+// recentPipelines lists finished pipelines, newest-finished first: every one
+// that finished since `since`, topped up with older ones to atLeast when fewer
+// finished in that window. A watchlist nobody has looked at for a few days
+// then still shows where things stood, instead of a near-empty list. The
+// top-up reaches back only as far as the store does (the Top window).
+func recentPipelines(pipes []Pipeline, since time.Time, atLeast int) []Pipeline {
 	var out []Pipeline
 	for _, p := range pipes {
-		if !p.Status.IsFinished() {
-			continue
+		if p.Status.IsFinished() {
+			out = append(out, p)
 		}
-		if pipeEnd(p).Before(since) {
-			continue
-		}
-		out = append(out, p)
 	}
-	sort.Slice(out, func(i, j int) bool { return pipeEnd(out[i]).After(pipeEnd(out[j])) })
+	sort.Slice(out, func(i, j int) bool {
+		if ei, ej := pipeEnd(out[i]), pipeEnd(out[j]); !ei.Equal(ej) {
+			return ei.After(ej)
+		}
+		return out[i].ID > out[j].ID
+	})
+	inWindow := sort.Search(len(out), func(i int) bool { return pipeEnd(out[i]).Before(since) })
+	return out[:max(inWindow, min(atLeast, len(out)))]
+}
+
+// failingRefs lists the refs (branches, tags, merge requests) whose pipelines
+// failed and haven't recovered: each has a failed pipeline newer than its
+// newest successful one on the same ref. Newer means a higher id, since GitLab
+// numbers pipelines in creation order: a run created after another is the
+// later code, whichever finished first. Only a success resolves a failure. A
+// canceled or skipped run after it doesn't, and neither does one still
+// running.
+//
+// It's per ref, so a broken main stays listed whatever passes on other
+// branches. The cost is that a branch abandoned after a failure stays listed
+// until it ages out of the store, so the order is the most recent failure
+// first: refs that keep failing come back to the top, and dead ones drift to
+// the bottom.
+//
+// Since is when the ref went red: when the first failure after that success
+// finished. A ref with no success in the store at all shows its first failure
+// there; nothing older than the store's window is known.
+func failingRefs(pipes []Pipeline) []FailingRef {
+	type key struct{ path, ref string }
+	byRef := map[key][]Pipeline{}
+	for _, p := range pipes {
+		if p.Status == StatusSuccess || p.Status == StatusFailed {
+			k := key{p.ProjectPath, p.Ref}
+			byRef[k] = append(byRef[k], p)
+		}
+	}
+	var out []FailingRef
+	for k, ps := range byRef {
+		sort.Slice(ps, func(i, j int) bool { return ps[i].ID < ps[j].ID })
+		first := 0 // the first failure after the last success
+		for i, p := range ps {
+			if p.Status == StatusSuccess {
+				first = i + 1
+			}
+		}
+		if first == len(ps) {
+			continue // the newest outcome is a success
+		}
+		out = append(out, FailingRef{
+			ProjectPath: k.path,
+			Ref:         k.ref,
+			Since:       pipeEnd(ps[first]),
+			Latest:      ps[len(ps)-1],
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if li, lj := pipeEnd(out[i].Latest), pipeEnd(out[j].Latest); !li.Equal(lj) {
+			return li.After(lj)
+		}
+		if out[i].ProjectPath != out[j].ProjectPath {
+			return out[i].ProjectPath < out[j].ProjectPath
+		}
+		return out[i].Ref < out[j].Ref
+	})
 	return out
 }
 

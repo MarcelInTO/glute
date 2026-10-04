@@ -89,6 +89,16 @@ func printSnapshot(s gitlab.Snapshot) {
 		fmt.Printf("  %-30s %-18s %-9s %9s  %s ago\n", format.Elide(p.ProjectPath, 30), format.Trunc(p.Ref, 18), p.Status, format.Duration(p.Duration), format.Ago(p.Finished))
 	}
 
+	fmt.Printf("\n[unresolved failures: %d]\n", len(s.FailingRefs))
+	for _, f := range s.FailingRefs {
+		last := f.Latest.Finished
+		if last.IsZero() {
+			last = f.Latest.Updated // its detail fetch hasn't happened yet (MaxDetailFetch)
+		}
+		fmt.Printf("  %-30s %-18s failing %-4s latest #%d %s ago\n", format.Elide(f.ProjectPath, 30), format.Trunc(f.Ref, 18),
+			format.Ago(f.Since), f.Latest.ID, format.Ago(last))
+	}
+
 	// The Pipelines tab's historical analytics, aggregated by project/product/runner.
 	fmt.Printf("\n[pipeline stats · by project: %d]\n", len(s.PipelineStats))
 	for _, a := range head(s.PipelineStats, 10) {

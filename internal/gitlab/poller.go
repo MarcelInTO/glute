@@ -25,6 +25,7 @@ const sourceParentPipeline = "parent_pipeline"
 // PollOptions tunes a Poller. Zero values fall back to sensible defaults.
 type PollOptions struct {
 	RecentWindow   time.Duration // "recent failures & successes" lookback
+	RecentMin      int           // recent pipelines reach back past RecentWindow until there are this many
 	TopWindow      time.Duration // "top … last month" lookback
 	TopLimit       int           // max rows in the Top panels
 	Concurrency    int           // max projects/detail-fetches in parallel
@@ -36,6 +37,9 @@ type PollOptions struct {
 func (o PollOptions) withDefaults() PollOptions {
 	if o.RecentWindow <= 0 {
 		o.RecentWindow = 24 * time.Hour
+	}
+	if o.RecentMin <= 0 {
+		o.RecentMin = 10
 	}
 	if o.TopWindow <= 0 {
 		o.TopWindow = 30 * 24 * time.Hour
@@ -268,7 +272,8 @@ func (p *Poller) Refresh(ctx context.Context) (Snapshot, error) {
 		Projects:         len(projects),
 		Current:          activePipelines(pipeSlice, jobSlice, p.childPipes, p.childParent),
 		RunningPipelines: runningPipelines(pipeSlice),
-		RecentPipelines:  recentPipelines(pipeSlice, recentSince),
+		RecentPipelines:  recentPipelines(pipeSlice, recentSince, p.opts.RecentMin),
+		FailingRefs:      failingRefs(pipeSlice),
 		RunningJobs:      runningJobs(jobSlice),
 		RecentJobs:       recentJobs(jobSlice, recentSince),
 		WindowStats:      windows[len(windows)-1],

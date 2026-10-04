@@ -44,8 +44,9 @@ const helpText = `glute — keys
 
   Tab / Shift-Tab    switch tabs
   1 / 2 / 3          Current / Work / Infrastructure
-  ↑ / ↓              scroll the Current tree (or finished list)
+  ↑ / ↓              scroll the Current tree (or the list you're on)
   f                  move between the tree and the finished list
+  u                  move between the tree and the unresolved failures
   Enter / click      open a finished pipeline's jobs and timeline
   Esc / q            close it
   o / click an id    open the selected pipeline (or job) in GitLab
@@ -176,33 +177,27 @@ func NewDashboard(svc gitlab.Service, opts Options) *Dashboard {
 	// Selecting a row in the Current tree reveals that row's full project path
 	// in the footer, the scroll-safe counterpart to the mouse hover the other
 	// tabs use (a scrolling table breaks the hover's fixed row math).
-	// Either panel's selection only speaks for the footer while that panel has
-	// the keyboard: a refresh re-selects in both, and the other one's path would
-	// otherwise replace the one the user is looking at.
-	current.table.SetSelectionChangedFunc(func(row, _ int) {
-		if current.finishedActive {
-			return
-		}
-		if path, ok := current.pathAtRow(row); ok {
-			d.hoverPath = path
-		} else {
-			d.hoverPath = ""
-		}
-		d.updateFooter()
-	})
-	current.finished.table.SetSelectionChangedFunc(func(row, _ int) {
-		if !current.finishedActive {
-			return
-		}
-		d.hoverPath = ""
-		if p, ok := current.finishedAt(row); ok {
-			d.hoverPath = p.ProjectPath
-		}
-		d.updateFooter()
-	})
+	// A panel's selection only speaks for the footer while that panel has the
+	// keyboard: a refresh re-selects in all of them, and another one's path
+	// would otherwise replace the one the user is looking at.
+	for _, p := range []struct {
+		panel curPanel
+		table *tview.Table
+	}{{curTree, current.table}, {curFinished, current.finished.table}, {curFailing, current.failing.table}} {
+		p.table.SetSelectionChangedFunc(func(int, int) {
+			if current.keyboard == p.panel {
+				d.syncCurrentFooter()
+			}
+		})
+	}
 	current.finished.table.SetSelectedFunc(func(row, _ int) {
 		if p, ok := current.finishedAt(row); ok {
 			d.openDetail(p)
+		}
+	})
+	current.failing.table.SetSelectedFunc(func(row, _ int) {
+		if f, ok := current.failingAt(row); ok {
+			d.openDetail(f.Latest)
 		}
 	})
 
@@ -302,9 +297,13 @@ func (d *Dashboard) onKey(ev *tcell.EventKey) *tcell.EventKey {
 	case 't':
 		d.cycleWindow()
 		return nil
-	case 'f':
+	case 'f', 'u':
 		if d.tabs[d.active] == pageCurrent {
-			d.app.SetFocus(d.current.toggleFocusTarget())
+			list := curFinished
+			if keyRune(ev) == 'u' {
+				list = curFailing
+			}
+			d.app.SetFocus(d.current.toggleKeyboard(list))
 			d.syncCurrentFooter()
 			return nil
 		}
@@ -349,19 +348,9 @@ func (d *Dashboard) selectTab(i int) {
 
 // syncCurrentFooter re-derives the footer's path from the selected row of
 // whichever Current panel has the keyboard, so it shows at once when that
-// panel changes (a tab switch, the f key) rather than only on the next move.
+// panel changes (a tab switch, the f or u key) as well as on each move.
 func (d *Dashboard) syncCurrentFooter() {
-	d.hoverPath = ""
-	if d.current.finishedActive {
-		row, _ := d.current.finished.table.GetSelection()
-		if p, ok := d.current.finishedAt(row); ok {
-			d.hoverPath = p.ProjectPath
-		}
-	} else if row, _ := d.current.table.GetSelection(); row > 0 {
-		if path, ok := d.current.pathAtRow(row); ok {
-			d.hoverPath = path
-		}
-	}
+	d.hoverPath = d.current.selectedPath()
 	d.updateFooter()
 }
 
@@ -542,21 +531,22 @@ func (d *Dashboard) onMouse(event *tcell.EventMouse, action tview.MouseAction) (
 
 	// The Current tab's tree is scrolled from the keyboard, so its footer
 	// detail follows the selected row (see SetSelectionChangedFunc), not the
-	// mouse. The "recently finished" panel below it also gets the usual hover
-	// reveal (its row math counts the scroll offset; see panelTable.rowAt) —
-	// but only while the cursor is actually over one of its rows, so passing
-	// over the tree above leaves the selection-derived path untouched.
+	// mouse. The two lists below it also get the usual hover reveal (their row
+	// math counts the scroll offset; see panelTable.rowAt) — but only while the
+	// cursor is actually over one of their rows, so passing over the tree above
+	// leaves the selection-derived path untouched.
 	//
-	// A click on a finished row opens that pipeline's detail view straight away
-	// — what clicking a row in a list means — with the panel taking focus and
-	// the row selected first, so closing the view comes back to it. The click is
-	// consumed, since the table would otherwise re-select the same row; so is a
-	// click on the panel that misses every row, which tview would turn into a
-	// selection of row -1 and then quietly reset to the top.
+	// A click on a row of either list opens that pipeline's detail view straight
+	// away — what clicking a row in a list means; for a failing ref, its
+	// latest failure — with the list taking focus and the row selected first,
+	// so closing the view comes back to it. The click is consumed, since the
+	// table would otherwise re-select the same row; so is a click on a list that
+	// misses every row, which tview would turn into a selection of row -1 and
+	// then quietly reset to the top.
 	//
-	// A click on a pipeline id, in either panel, opens that pipeline in the
-	// browser instead (the id is underlined as a link); consumed, so the tree
-	// doesn't also move its selection.
+	// A click on a pipeline id, in the tree or the finished list, opens that
+	// pipeline in the browser instead (the id is underlined as a link);
+	// consumed, so the tree doesn't also move its selection.
 	if d.tabs[d.active] == pageCurrent {
 		if action == tview.MouseLeftDown {
 			d.current.pressAt(x, y)
@@ -569,20 +559,36 @@ func (d *Dashboard) onMouse(event *tcell.EventMouse, action tview.MouseAction) (
 				}
 			}
 		}
-		if action == tview.MouseLeftClick && d.current.finished.table.InRect(x, y) {
-			if idx, ok := d.current.finished.rowAt(x, y); ok {
-				if p, ok := d.current.finishedAt(idx + 1); ok {
-					d.current.finishedActive = true
-					d.app.SetFocus(d.current.finished.table)
-					d.current.finished.table.Select(idx+1, 0)
+		lists := []struct {
+			panel curPanel
+			list  *panelTable
+			open  func(row int) (gitlab.Pipeline, bool)
+		}{
+			{curFinished, d.current.finished, d.current.finishedAt},
+			{curFailing, d.current.failing, func(row int) (gitlab.Pipeline, bool) {
+				f, ok := d.current.failingAt(row)
+				return f.Latest, ok
+			}},
+		}
+		for _, l := range lists {
+			if action != tview.MouseLeftClick || !l.list.table.InRect(x, y) {
+				continue
+			}
+			if idx, ok := l.list.rowAt(x, y); ok {
+				if p, ok := l.open(idx + 1); ok {
+					d.current.keyboard = l.panel
+					d.app.SetFocus(l.list.table)
+					l.list.table.Select(idx+1, 0)
 					d.openDetail(p)
 				}
 			}
 			return nil, action
 		}
-		if path, ok := d.current.finished.hoverAt(x, y); ok && path != d.hoverPath {
-			d.hoverPath = path
-			d.updateFooter()
+		for _, l := range lists {
+			if path, ok := l.list.hoverAt(x, y); ok && path != d.hoverPath {
+				d.hoverPath = path
+				d.updateFooter()
+			}
 		}
 		return event, action
 	}

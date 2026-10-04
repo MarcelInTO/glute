@@ -43,7 +43,7 @@ func TestCtrlLettersAreNotTheirLetters(t *testing.T) {
 	l.screen.InjectKey(tcell.KeyRune, '?', tcell.ModNone)
 	l.waitFor("switch tabs")
 	l.do(func() {
-		if d.current.finishedActive {
+		if d.current.keyboard == curFinished {
 			t.Error("Ctrl-F moved the keyboard to the finished list")
 		}
 		if row, _ := d.current.table.GetSelection(); row <= 1 {

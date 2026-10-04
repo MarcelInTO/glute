@@ -77,6 +77,47 @@ func SampleSnapshot() Snapshot {
 			Source: "merge_request_event", User: "priya", Finished: now.Add(-38 * time.Minute), Duration: 3*time.Minute + 12*time.Second},
 		{ID: 96, ProjectPath: "acme/payments/web", Ref: "main", Status: StatusSuccess, WebURL: url("acme/payments/web", 96),
 			Source: "push", User: "amir", Finished: now.Add(-2 * time.Hour), Duration: 7 * time.Minute},
+		// Only three finished in the last day, so the list reaches back past it
+		// to the ten that RecentMin asks for.
+		{ID: 95, ProjectPath: "acme/payments/api", Ref: "refs/merge-requests/412/head", Status: StatusSuccess, WebURL: url("acme/payments/api", 95),
+			Source: "merge_request_event", User: "amir", Finished: now.Add(-26 * time.Hour), Duration: 5*time.Minute + 52*time.Second},
+		{ID: 94, ProjectPath: "acme/infra/nightly-backup", Ref: "main", Status: StatusFailed, WebURL: url("acme/infra/nightly-backup", 94),
+			Source: "schedule", User: "release-bot", Finished: now.Add(-50 * time.Hour), Duration: 12*time.Minute + 30*time.Second},
+		{ID: 93, ProjectPath: "acme/payments/api", Ref: "main", Status: StatusSuccess, WebURL: url("acme/payments/api", 93),
+			Source: "push", User: "jchen", Finished: now.Add(-53 * time.Hour), Duration: 6*time.Minute + 5*time.Second},
+		{ID: 92, ProjectPath: "acme/platform/gateway", Ref: "main", Status: StatusSuccess, WebURL: url("acme/platform/gateway", 92),
+			Source: "push", User: "priya", Finished: now.Add(-70 * time.Hour), Duration: 8*time.Minute + 47*time.Second},
+		{ID: 91, ProjectPath: "acme/payments/web", Ref: "feat/checkout-v2", Status: StatusCanceled, WebURL: url("acme/payments/web", 91),
+			Source: "push", User: "priya", Finished: now.Add(-75 * time.Hour), Duration: 1*time.Minute + 20*time.Second},
+		{ID: 89, ProjectPath: "acme/infra/nightly-backup", Ref: "main", Status: StatusFailed, WebURL: url("acme/infra/nightly-backup", 89),
+			Source: "schedule", User: "release-bot", Finished: now.Add(-98 * time.Hour), Duration: 12*time.Minute + 2*time.Second},
+		{ID: 88, ProjectPath: "acme/payments/web", Ref: "main", Status: StatusSuccess, WebURL: url("acme/payments/web", 88),
+			Source: "push", User: "amir", Finished: now.Add(-120 * time.Hour), Duration: 7*time.Minute + 12*time.Second},
+	}
+
+	// The refs still red, most recent failure first: the gateway's fresh
+	// failure on a branch, the scheduled backup failing every night since #89,
+	// then two that have gone quiet and drifted down — a feature branch nobody
+	// came back to, and a main with no success anywhere in the window.
+	recentByID := func(id int64) Pipeline {
+		for _, p := range recent {
+			if p.ID == id {
+				return p
+			}
+		}
+		panic(fmt.Sprintf("no sample pipeline #%d", id))
+	}
+	stale := func(id int64, path, ref, user string, ago time.Duration) Pipeline {
+		return Pipeline{ID: id, ProjectPath: path, Ref: ref, Status: StatusFailed, Source: "push", User: user,
+			WebURL: url(path, id), Finished: now.Add(-ago), Duration: 4*time.Minute + 9*time.Second}
+	}
+	failing := []FailingRef{
+		{ProjectPath: "acme/platform/gateway", Ref: "feat/rate-limit", Since: recentByID(97).Finished, Latest: recentByID(97)},
+		{ProjectPath: "acme/infra/nightly-backup", Ref: "main", Since: recentByID(89).Finished, Latest: recentByID(94)},
+		{ProjectPath: "acme/payments/web", Ref: "feat/old-checkout", Since: now.Add(-12 * 24 * time.Hour),
+			Latest: stale(70, "acme/payments/web", "feat/old-checkout", "amir", 12*24*time.Hour)},
+		{ProjectPath: "acme/legacy/reports", Ref: "main", Since: now.Add(-26 * 24 * time.Hour),
+			Latest: stale(61, "acme/legacy/reports", "main", "release-bot", 19*24*time.Hour)},
 	}
 
 	topPipe := []PipelineAgg{
@@ -228,6 +269,7 @@ func SampleSnapshot() Snapshot {
 		Current:          current,
 		RunningPipelines: running,
 		RecentPipelines:  recent,
+		FailingRefs:      failing,
 		RunningJobs:      runningJob,
 		RecentJobs:       recentJob,
 		WindowStats:      full,
@@ -242,16 +284,24 @@ func SampleSnapshot() Snapshot {
 	}
 }
 
-// SampleTrees returns the detail view's tree for each of s's recent (finished)
-// sample pipelines: jobs timed so the timeline reads true — parallel jobs
-// overlapping, queue waits, jobs that never ran — with a downstream child
-// pipeline under one and a failure with a skipped job behind it in another.
-// Times are anchored to each pipeline's own Finished and Duration, so the tree
-// agrees with the finished panel. Sample data only.
+// SampleTrees returns the detail view's tree for each sample pipeline it can
+// open — the recent (finished) ones, and each failing ref's latest
+// failure: jobs timed so the timeline reads true — parallel jobs overlapping,
+// queue waits, jobs that never ran — with a downstream child pipeline under
+// one and a failure with a skipped job behind it in another. The rest are a
+// plain build-then-test run. Times are anchored to each pipeline's own
+// Finished and Duration, so the tree agrees with the panels. Sample data only.
 func SampleTrees(s Snapshot) map[int64]ActivePipeline {
 	ms := func(m, sec int) time.Duration { return time.Duration(m)*time.Minute + time.Duration(sec)*time.Second }
 	trees := map[int64]ActivePipeline{}
-	for _, p := range s.RecentPipelines {
+	pipes := append([]Pipeline(nil), s.RecentPipelines...)
+	for _, f := range s.FailingRefs {
+		pipes = append(pipes, f.Latest)
+	}
+	for _, p := range pipes {
+		if _, done := trees[p.ID]; done {
+			continue
+		}
 		start := p.Finished.Add(-p.Duration)
 		p.Started, p.Created = start, start.Add(-12*time.Second) // time to the first runner pickup
 		// job builds one of p's own jobs, run from offset from (into the
@@ -299,6 +349,12 @@ func SampleTrees(s Snapshot) map[int64]ActivePipeline {
 				job(9601, "build", "build", StatusSuccess, "docker-builder", ms(0, 12), 0, ms(4, 10)),
 				job(9602, "test", "e2e", StatusSuccess, "shared-linux-02", ms(0, 5), ms(4, 17), ms(2, 43)),
 				job(9603, "deploy", "deploy-prod", StatusManual, "", 0, -1, 0),
+			})
+		default: // build, then test, which ends the way the pipeline did
+			half := p.Duration / 2
+			tree.Jobs = sortPipelineJobs([]Job{
+				job(p.ID*100+1, "build", "build", StatusSuccess, "shared-linux-01", ms(0, 6), 0, half),
+				job(p.ID*100+2, "test", "test", p.Status, "shared-linux-02", ms(0, 3), half, p.Duration-half),
 			})
 		}
 		trees[p.ID] = tree

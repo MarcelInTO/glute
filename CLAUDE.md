@@ -186,8 +186,9 @@ Keep it CGO-free so cross-compilation stays trivial.
   the two capacity panels on the pipeline tab and left job history stranded on a
   tab whose headline panel (running jobs) duplicated the Current tree; that panel
   was dropped in the regroup. *Current* is the live-monitoring
-  view, split top-to-bottom into the **active-pipeline tree** (top ~2/3) and a
-  **"recently finished pipelines"** panel (bottom ~1/3). The tree is a single
+  view, split top-to-bottom into the **active-pipeline tree** (top ~2/3) and,
+  in the bottom ~1/3, a **"recently finished pipelines"** panel beside a
+  narrower **"unresolved failures"** one. The tree is a single
   indented, scrollable table — each active root pipeline, its jobs (grouped by
   stage), and its downstream child pipelines nested one level deeper (marked `↳`),
   with a subtree jobs-done/total progress column. The tree is built by the pure
@@ -198,7 +199,29 @@ Keep it CGO-free so cross-compilation stays trivial.
   (`fillFinishedPipelines`) lists the snapshot's `RecentPipelines` (already
   finished-only, newest-finished first) so a pipeline you were watching keeps its
   outcome after it drops out of the tree — but only finished **root** pipelines
-  (children are excluded from the store), within the recent window.
+  (children are excluded from the store). It shows the whole recent window, and
+  when that holds fewer than `PollOptions.RecentMin` (10, not a config key) it
+  reaches further back until it has 10, so someone who hasn't looked for days
+  still sees where things stood. The failures panel (`fillFailingRefs`, from
+  the pure `failingRefs`) lists every **ref** (branch, tag, MR) whose newest
+  outcome is a failure: a failed pipeline with a higher id than the newest
+  success on the same ref. Only a success resolves a failure; a cancel or a
+  running retry doesn't. Per-project tracking came first and was dropped: a
+  success on any branch cleared the project, so a broken `main` could hide
+  behind a green feature branch. Per ref, a branch abandoned after a failure
+  stays listed until it ages out of the store, so the list is ordered by the
+  **most recent failure**: refs that keep failing come back to the top, and
+  dead ones drift to the bottom. FAILING shows how long the ref has been red:
+  since the first failure after that success finished. The order isn't a
+  column. A `+` once marked "no success in the window, may be older". Per ref
+  it was on almost every new branch, and a ref red for the whole window
+  already reads ~29d, so it went. A row opens the ref's latest failure in the
+  detail view. The panel's width is set at draw time (`failingWidth`: 3/8 of
+  the row, between 40 and 56 columns): the floor is what its focused title
+  needs, and a Flex can't express a floor. It shares the finished list's
+  newest-first scroll rule (`placeSelection`). Checked against the real
+  instance with `glute refresh`: the five refs it listed matched GitLab's own
+  pipeline lists.
 - **The Work tab (`work.go`) is a 2×2 grid of history keyed by project** —
   pipelines on the top row, the jobs inside them on the bottom — over the selected
   history window (the `t` key; the full Top window until changed); it says nothing
@@ -372,8 +395,10 @@ Keep it CGO-free so cross-compilation stays trivial.
   instance for a child pipeline and a job. The id cell keeps its URL in its
   `Reference` (a `link`), since tcell has no getter for a style's URL and a
   click has to find it (`urlAt`).
-- **Which Current panel owns the keyboard** (`currentView.finishedActive`) is
-  set only by intent: the `f` key, or a mouse press on a panel. It is never set
+- **Which Current panel owns the keyboard** (`currentView.keyboard`) is
+  set only by intent: the `f` key (the finished list), the `u` key (the
+  unresolved failures), each of which hands it back to the tree when pressed
+  again, or a mouse press on a panel. It is never set
   from focus events, because tview moves focus incidentally too.
   `Pages.HidePage` re-focuses the page's default item (the tree), so closing the
   help or the detail view would otherwise forget the user was on the finished

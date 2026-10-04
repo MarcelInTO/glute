@@ -385,6 +385,11 @@ func TestClickOpensFinishedRow(t *testing.T) {
 
 	// A click on the panel below the last row opens nothing and leaves the
 	// selection alone (tview would otherwise select row -1, then reset to 1).
+	// Cut to three rows first, so there's space below them.
+	snap := d.snapshot
+	snap.RecentPipelines = snap.RecentPipelines[:3]
+	d.current.update(snap)
+	_ = renderToText(t, d, 130, 32)
 	click(x+4, y+6)
 	if row, _ := fin.GetSelection(); d.detailOpen() || row != 3 {
 		t.Errorf("a click on empty space should change nothing, got open=%v row=%d", d.detailOpen(), row)

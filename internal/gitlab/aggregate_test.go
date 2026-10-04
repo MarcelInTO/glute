@@ -1,6 +1,7 @@
 package gitlab
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -140,13 +141,111 @@ func TestRunningAndRecentPipelines(t *testing.T) {
 		t.Fatalf("running: want [1], got %+v", got)
 	}
 
-	recent := recentPipelines(pipes, now.Add(-24*time.Hour))
+	recent := recentPipelines(pipes, now.Add(-24*time.Hour), 1)
 	if len(recent) != 2 {
 		t.Fatalf("recent: want 2 within 24h, got %d", len(recent))
 	}
 	// Newest-finished first: pipeline 3 (-90m) before pipeline 2 (-2h).
 	if recent[0].ID != 3 || recent[1].ID != 2 {
 		t.Errorf("recent order: want [3 2], got [%d %d]", recent[0].ID, recent[1].ID)
+	}
+}
+
+// TestRecentPipelinesTopsUpPastTheWindow: when fewer than atLeast finished in
+// the recent window, older finished pipelines fill the list up to atLeast, still
+// newest first; a busy window is shown whole, however many that is.
+func TestRecentPipelinesTopsUpPastTheWindow(t *testing.T) {
+	now := time.Now()
+	day := now.Add(-24 * time.Hour)
+	var pipes []Pipeline
+	for i := range 6 { // #1 finished 1h ago … #6 6 days ago
+		pipes = append(pipes, Pipeline{ID: int64(i + 1), Status: StatusSuccess,
+			Finished: now.Add(-time.Duration(i) * 24 * time.Hour).Add(-time.Hour)})
+	}
+	pipes = append(pipes, Pipeline{ID: 7, Status: StatusRunning, Started: now.Add(-10 * 24 * time.Hour)})
+
+	ids := func(ps []Pipeline) []int64 {
+		var out []int64
+		for _, p := range ps {
+			out = append(out, p.ID)
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		atLeast int
+		want    []int64
+	}{
+		{1, []int64{1}},                 // the window alone already has enough
+		{4, []int64{1, 2, 3, 4}},        // topped up with the three newest older ones
+		{10, []int64{1, 2, 3, 4, 5, 6}}, // all there is; never the running one
+	} {
+		if got := ids(recentPipelines(pipes, day, tc.atLeast)); !slices.Equal(got, tc.want) {
+			t.Errorf("atLeast %d: got %v, want %v", tc.atLeast, got, tc.want)
+		}
+	}
+
+	// A busy day is shown whole, past atLeast.
+	var busy []Pipeline
+	for i := range 15 {
+		busy = append(busy, Pipeline{ID: int64(i + 1), Status: StatusFailed, Finished: now.Add(-time.Duration(i+1) * time.Minute)})
+	}
+	if got := recentPipelines(busy, day, 10); len(got) != 15 {
+		t.Errorf("15 finished in the window with atLeast 10: got %d, want all 15", len(got))
+	}
+}
+
+// TestFailingRefs: a ref is listed when its newest outcome is a failure, red
+// since the first failure after its last success on that ref — a success on
+// another branch doesn't clear it; canceled and running runs neither resolve
+// nor start a failure; ordered by the most recent failure first.
+func TestFailingRefs(t *testing.T) {
+	now := time.Now()
+	ago := func(h int) time.Time { return now.Add(-time.Duration(h) * time.Hour) }
+	pipes := []Pipeline{
+		// p/main: success, then failed twice; a cancel and a running retry
+		// don't fix it, and neither does p/feat's success.
+		{ID: 20, ProjectPath: "p", Ref: "main", Status: StatusSuccess, Finished: ago(30)},
+		{ID: 21, ProjectPath: "p", Ref: "main", Status: StatusFailed, Finished: ago(20)},
+		{ID: 22, ProjectPath: "p", Ref: "main", Status: StatusCanceled, Finished: ago(15)},
+		{ID: 23, ProjectPath: "p", Ref: "main", Status: StatusFailed, Finished: ago(10)},
+		{ID: 24, ProjectPath: "p", Ref: "main", Status: StatusRunning, Started: ago(1)},
+		// p/feat: failed, then fixed on the same branch.
+		{ID: 25, ProjectPath: "p", Ref: "feat", Status: StatusFailed, Finished: ago(9)},
+		{ID: 26, ProjectPath: "p", Ref: "feat", Status: StatusSuccess, Finished: ago(8)},
+		// p/fix: one failure, nothing since.
+		{ID: 27, ProjectPath: "p", Ref: "fix", Status: StatusFailed, Finished: ago(5)},
+		// q/main: no success in the window: red since the first failure held.
+		{ID: 30, ProjectPath: "q", Ref: "main", Status: StatusFailed, Finished: ago(40)},
+		{ID: 31, ProjectPath: "q", Ref: "main", Status: StatusFailed, Finished: ago(39)},
+		// r/main: #41 was created later and failed, though #40 (a long run
+		// created first) finished after it — by creation order it's still red.
+		{ID: 40, ProjectPath: "r", Ref: "main", Status: StatusSuccess, Finished: ago(2)},
+		{ID: 41, ProjectPath: "r", Ref: "main", Status: StatusFailed, Finished: ago(3)},
+		// s/main: no outcome either way.
+		{ID: 50, ProjectPath: "s", Ref: "main", Status: StatusCanceled, Finished: ago(5)},
+	}
+
+	got := failingRefs(pipes)
+	type row struct {
+		path, ref string
+		since     time.Time
+		latest    int64
+	}
+	want := []row{
+		{"r", "main", ago(3), 41},
+		{"p", "fix", ago(5), 27},
+		{"p", "main", ago(20), 23},
+		{"q", "main", ago(40), 31},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d failing refs %+v, want %d", len(got), got, len(want))
+	}
+	for i, w := range want {
+		g := got[i]
+		if g.ProjectPath != w.path || g.Ref != w.ref || !g.Since.Equal(w.since) || g.Latest.ID != w.latest {
+			t.Errorf("row %d = {%s %s since %v latest #%d}, want {%s %s since %v latest #%d}",
+				i, g.ProjectPath, g.Ref, now.Sub(g.Since), g.Latest.ID, w.path, w.ref, now.Sub(w.since), w.latest)
+		}
 	}
 }
 

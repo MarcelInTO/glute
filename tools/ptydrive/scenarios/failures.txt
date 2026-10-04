@@ -1,0 +1,57 @@
+# The unresolved-failures panel beside the finished list, against
+# `glute --sample` at 120x30. It starts at column 76, and its rows are 22-25,
+# most recent failure first: gateway feat/rate-limit (38m), nightly-backup
+# main (failing 4d, failed again 2d ago), then two gone quiet: web
+# feat/old-checkout (12d) and reports main (26d). Pinned to the desktop case,
+# so o reaches the stand-in opener.
+unset SSH_CONNECTION
+unset SSH_CLIENT
+unset SSH_TTY
+env DISPLAY=:99
+opener
+
+expect Unresolved failures · u to select
+expect-row 22 feat/rate-limit
+expect-row 24 feat/old-checkout
+expect-row 25 26d
+
+# u hands it the keyboard, and the footer names the selected project in full.
+key u
+expect Unresolved failures · Enter · u back
+expect acme/platform/gateway
+
+# Down to nightly-backup: Enter opens its latest failure, #94, and Esc comes
+# back to the list.
+key down enter
+expect Pipeline #94 · nightly-backup · main
+show
+key esc
+expect-not Pipeline #94
+expect Enter · u back
+expect acme/infra/nightly-backup
+
+# f goes straight across to the finished list, u back to the failures, and u
+# again hands the keyboard to the tree.
+key f
+expect Enter or click opens
+expect Unresolved failures · u to select
+key u
+expect Enter · u back
+key u
+expect Unresolved failures · u to select
+expect f to select
+
+# A click on a row opens that ref's latest failure (feat/old-checkout's is
+# #70), and the list keeps the keyboard when the view closes.
+click 85 24
+expect Pipeline #70 · web · feat/old-checkout
+key esc
+expect Enter · u back
+expect acme/payments/web
+
+# o opens the selected ref's latest failure in GitLab.
+key o
+expect-opened /acme/payments/web/-/pipelines/70
+
+key u q
+expect-exit

@@ -187,6 +187,23 @@ type JobStats struct {
 	P95Queue     time.Duration
 }
 
+// FailingRef is a project's ref (a branch, tag or merge request) whose
+// pipelines failed and haven't recovered: its newest pipeline outcome is a
+// failure, with no success since (see failingRefs). It's what the Current
+// tab's "unresolved failures" panel lists, as a front-page pointer to where
+// attention is needed.
+type FailingRef struct {
+	ProjectPath string
+	Ref         string
+	// Since is when the ref went red: when the first failed pipeline after its
+	// last success finished. With no success in the store, it's the first
+	// failure the store holds.
+	Since time.Time
+	// Latest is the ref's newest failed pipeline: the one to open, for which
+	// jobs failed and the GitLab link. The list is ordered by when it finished.
+	Latest Pipeline
+}
+
 // ActivePipeline is one node of the Current tab's tree: a pipeline together with
 // the jobs that belong directly to it and its downstream child pipelines
 // (recursively). Roots are the currently-active top-level pipelines; a root's
@@ -245,7 +262,13 @@ type Snapshot struct {
 	Current []ActivePipeline
 
 	RunningPipelines []Pipeline
-	RecentPipelines  []Pipeline
+	// RecentPipelines are the finished pipelines, newest-finished first: all
+	// of those in the recent window, topped up with older ones to at least
+	// PollOptions.RecentMin.
+	RecentPipelines []Pipeline
+	// FailingRefs are the refs whose newest pipeline outcome is a failure,
+	// most recent failure first.
+	FailingRefs []FailingRef
 
 	RunningJobs []Job
 	RecentJobs  []Job

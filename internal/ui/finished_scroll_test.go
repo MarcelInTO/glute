@@ -131,7 +131,7 @@ func TestFinishedFollowsNewestAtTop(t *testing.T) {
 func TestFinishedSelectionStopsAtBottomEdgeAtTop(t *testing.T) {
 	d, snap := finishedFollowDashboard(t)
 	fin := d.current.finished.table
-	visible := finishedVisibleRows(fin)
+	visible := visibleRows(fin)
 	fin.Select(visible, 0) // the last row in view
 	_ = renderToText(t, d, 130, 32)
 	finishArrives(t, d, snap, 2001)

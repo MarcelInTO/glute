@@ -13,7 +13,8 @@ import (
 
 // currentView is the Current tab: the "what's happening right now" monitoring
 // view, split top-to-bottom into the active-pipeline tree (roughly the top two
-// thirds) and a "recently finished" panel below it (roughly the bottom third).
+// thirds) and, below it (roughly the bottom third), a "recently finished" panel
+// beside a narrower "unresolved failures" one.
 //
 // The tree table renders each root pipeline, its jobs, and its downstream child
 // pipelines, indented to show the hierarchy. Unlike the other tabs' panels it's
@@ -24,30 +25,61 @@ import (
 // after it drops out of the tree above — otherwise a pipeline you were watching
 // simply vanishes the moment it finishes and you have to leave the tab to learn
 // whether it passed. It lists newest first, so the most recent completions sit
-// at the top and older ones clip off the bottom. It's also the way into the
+// at the top and older ones clip off the bottom. It reaches back past the recent
+// window when that holds few runs (see Snapshot.RecentPipelines), so after a few
+// days away it still says where things stood. It's also the way into the
 // detail view (detail.go): its rows are selectable once it has focus (the `f`
 // key, or a click), and Enter or a click opens the selected pipeline's tree.
 //
-// Only one of the two panels takes the arrow keys at a time, and only that one
-// shows its selection highlight — tview highlights a selected row whether or
-// not its table has focus, so otherwise both would, and nothing on screen would
-// say which one ↑/↓ is about to move.
+// The unresolved-failures panel lists every ref (branch, tag, merge request)
+// whose newest pipeline outcome is a failure, with how long it has been
+// failing: where attention is needed, however long ago it broke. The most
+// recent failure comes first, so a ref that keeps failing stays near the top
+// and an abandoned branch drifts down. It has less to say than the finished
+// list, so it's the narrower of the two. Its rows open the same way (the `u`
+// key, or a click), onto the ref's latest failed pipeline.
+//
+// Only one panel takes the arrow keys at a time, and only that one shows its
+// selection highlight — tview highlights a selected row whether or not its
+// table has focus, so otherwise all would, and nothing on screen would say
+// which one ↑/↓ is about to move.
 type currentView struct {
 	root     *tview.Flex
 	table    *tview.Table
 	finished *panelTable
+	failing  *panelTable
 	paths    []string          // full project path per data row, indexed by (tableRow - 1)
 	rows     []curRow          // last-rendered rows, so tick can re-time the live ones
 	aliases  map[string]string // runner full name → short display label
 
-	finishedPipes []gitlab.Pipeline // the finished panel's rows, indexed by (tableRow - 1)
-	// finishedActive says which panel owns the keyboard while the tab is shown:
-	// the finished list (true) or the tree. Only the user's intent sets it — the
-	// f key, or a mouse press on either panel — never a focus change as such:
-	// tview moves focus incidentally too (hiding an overlay page re-focuses the
-	// page's default item, the tree), and following that would forget, each
-	// time the help or the detail view closed, that the user was on the list.
-	finishedActive bool
+	finishedPipes []gitlab.Pipeline   // the finished panel's rows, indexed by (tableRow - 1)
+	failingRefs   []gitlab.FailingRef // the failures panel's rows, likewise
+	// keyboard says which panel owns the keyboard while the tab is shown. Only
+	// the user's intent sets it — the f or u key, or a mouse press on a panel —
+	// never a focus change as such: tview moves focus incidentally too (hiding
+	// an overlay page re-focuses the page's default item, the tree), and
+	// following that would forget, each time the help or the detail view
+	// closed, that the user was on a list.
+	keyboard curPanel
+}
+
+// curPanel names one of the Current tab's panels, for which of them owns the
+// keyboard.
+type curPanel int
+
+const (
+	curTree curPanel = iota
+	curFinished
+	curFailing
+)
+
+// failingWidth is how many of the bottom row's w columns the unresolved-
+// failures panel takes: three eighths, but at least what its title needs to
+// show its key hints whole, and no more than its three columns can use, so
+// that on a wide terminal the rest goes to the finished list's seven. It never
+// takes more than half, however narrow the terminal.
+func failingWidth(w int) int {
+	return min(max(w*3/8, 40), 56, w/2)
 }
 
 func newCurrentView(aliases map[string]string) *currentView {
@@ -68,32 +100,50 @@ func newCurrentView(aliases map[string]string) *currentView {
 	finished := newPanelTable(finishedTitle(false), 1, 2)
 	finished.table.SetSelectedStyle(tcell.StyleDefault.Background(tcell.ColorDarkSlateGray).Foreground(tcell.ColorWhite))
 
-	// 2:1 split puts the finished panel at about the bottom third; the tree
+	failing := newPanelTable(failingTitle(false), 0, 1) // PROJECT and REF flex
+	failing.table.SetSelectedStyle(tcell.StyleDefault.Background(tcell.ColorDarkSlateGray).Foreground(tcell.ColorWhite))
+
+	// The bottom row: the finished list, and the failures beside it at the
+	// width failingWidth picks from the row's own width, set as it's drawn,
+	// since a Flex can only split by a fixed size or a proportion.
+	bottom := tview.NewFlex()
+	bottom.AddItem(finished.table, 0, 1, false)
+	bottom.AddItem(failing.table, 0, 0, false)
+	bottom.SetDrawFunc(func(_ tcell.Screen, x, y, w, h int) (int, int, int, int) {
+		bottom.ResizeItem(failing.table, failingWidth(w), 0)
+		return x, y, w, h
+	})
+
+	// 2:1 split puts the bottom row at about the bottom third; the tree
 	// starts with focus so the arrow keys scroll it.
 	root := tview.NewFlex().SetDirection(tview.FlexRow)
 	root.AddItem(t, 0, 2, true)
-	root.AddItem(finished.table, 0, 1, false)
-	v := &currentView{root: root, table: t, finished: finished, aliases: aliases}
+	root.AddItem(bottom, 0, 1, false)
+	v := &currentView{root: root, table: t, finished: finished, failing: failing, aliases: aliases}
 
 	// Selectability is the highlight switch (see the type comment): a panel is
 	// selectable only while it has focus. Its selected row is kept either way,
 	// so focus coming back lands where it left.
 	t.SetFocusFunc(func() { t.SetSelectable(true, false) })
 	t.SetBlurFunc(func() { t.SetSelectable(false, false) })
-	f := finished.table
-	f.SetFocusFunc(func() {
-		finished.setTitle(finishedTitle(true))
-		f.SetSelectable(true, false)
-		// Re-select to clamp the view to the selection: while unfocused the
-		// panel is pinned to the top on each refresh, which may have left the
-		// selected row below the fold.
-		row, _ := f.GetSelection()
-		f.Select(max(row, 1), 0)
-	})
-	f.SetBlurFunc(func() {
-		finished.setTitle(finishedTitle(false))
-		f.SetSelectable(false, false)
-	})
+	for _, l := range []struct {
+		p     *panelTable
+		title func(focused bool) string
+	}{{finished, finishedTitle}, {failing, failingTitle}} {
+		l.p.table.SetFocusFunc(func() {
+			l.p.setTitle(l.title(true))
+			l.p.table.SetSelectable(true, false)
+			// Re-select to clamp the view to the selection: while unfocused the
+			// panel is pinned to the top on each refresh, which may have left
+			// the selected row below the fold.
+			row, _ := l.p.table.GetSelection()
+			l.p.table.Select(max(row, 1), 0)
+		})
+		l.p.table.SetBlurFunc(func() {
+			l.p.setTitle(l.title(false))
+			l.p.table.SetSelectable(false, false)
+		})
+	}
 	return v
 }
 
@@ -110,23 +160,40 @@ func finishedTitle(focused bool) string {
 	return base + " · f to select"
 }
 
+// failingTitle is the unresolved-failures panel's title, with its key hint
+// like finishedTitle's. The panel is narrow, so the hint is terse: the title
+// has to fit the panel's minimum width (failingWidth) whole.
+func failingTitle(focused bool) string {
+	const base = "Unresolved failures"
+	if focused {
+		return base + " · Enter · u back"
+	}
+	return base + " · u to select"
+}
+
 // focusTarget is the panel that should hold keyboard focus when the Current
 // tab is shown.
 func (v *currentView) focusTarget() tview.Primitive {
-	if v.finishedActive {
+	switch v.keyboard {
+	case curFinished:
 		return v.finished.table
+	case curFailing:
+		return v.failing.table
 	}
 	return v.table
 }
 
-// toggleFocusTarget flips which Current panel owns the keyboard, returning the
-// panel that now should have focus. With nothing finished to select, the tree
-// keeps it.
-func (v *currentView) toggleFocusTarget() tview.Primitive {
-	if !v.finishedActive && len(v.finishedPipes) == 0 {
-		return v.table
+// toggleKeyboard hands the keyboard to list p (the f and u keys), or back to
+// the tree if p already has it, and returns the panel that should now have
+// focus. A list with nothing in it to select doesn't take the keyboard.
+func (v *currentView) toggleKeyboard(p curPanel) tview.Primitive {
+	switch {
+	case v.keyboard == p:
+		v.keyboard = curTree
+	case p == curFinished && len(v.finishedPipes) > 0,
+		p == curFailing && len(v.failingRefs) > 0:
+		v.keyboard = p
 	}
-	v.finishedActive = !v.finishedActive
 	return v.focusTarget()
 }
 
@@ -136,27 +203,53 @@ func (v *currentView) toggleFocusTarget() tview.Primitive {
 func (v *currentView) pressAt(x, y int) {
 	switch {
 	case v.finished.table.InRect(x, y):
-		v.finishedActive = true
+		v.keyboard = curFinished
+	case v.failing.table.InRect(x, y):
+		v.keyboard = curFailing
 	case v.table.InRect(x, y):
-		v.finishedActive = false
+		v.keyboard = curTree
 	}
 }
 
 // selectedURL is the GitLab page for the selected row of whichever panel has
-// the keyboard: a finished pipeline's, or a tree row's — a pipeline's page, or
-// on a job row the job's own (its log, which is where "why did it fail" goes
-// next). Empty when there's no row or no known page.
+// the keyboard: a finished pipeline's, a failing ref's latest failure's,
+// or a tree row's — a pipeline's page, or on a job row the job's own (its log,
+// which is where "why did it fail" goes next). Empty when there's no row or no
+// known page.
 func (v *currentView) selectedURL() string {
-	if v.finishedActive {
+	switch v.keyboard {
+	case curFinished:
 		row, _ := v.finished.table.GetSelection()
 		p, _ := v.finishedAt(row)
 		return p.WebURL
+	case curFailing:
+		row, _ := v.failing.table.GetSelection()
+		f, _ := v.failingAt(row)
+		return f.Latest.WebURL
 	}
 	row, _ := v.table.GetSelection()
 	if i := row - 1; i >= 0 && i < len(v.rows) {
 		return v.rows[i].url
 	}
 	return ""
+}
+
+// selectedPath is the full project path of the selected row of whichever
+// panel has the keyboard, for the footer; empty when there's none.
+func (v *currentView) selectedPath() string {
+	switch v.keyboard {
+	case curFinished:
+		row, _ := v.finished.table.GetSelection()
+		p, _ := v.finishedAt(row)
+		return p.ProjectPath
+	case curFailing:
+		row, _ := v.failing.table.GetSelection()
+		f, _ := v.failingAt(row)
+		return f.ProjectPath
+	}
+	row, _ := v.table.GetSelection()
+	path, _ := v.pathAtRow(row)
+	return path
 }
 
 // finishedAt returns the pipeline on a finished-panel table row (1-based;
@@ -172,21 +265,8 @@ func (v *currentView) finishedAt(row int) (gitlab.Pipeline, bool) {
 // updateFinished refills the finished panel, keeping the selection on the same
 // pipeline rather than the same row: each refresh can push newly finished
 // pipelines in on top, and a selection left on the row index would slide onto
-// a different pipeline under the user's cursor — the one Enter then opens.
-//
-// The view follows the usual rule for a newest-first list. At the top — the
-// panel scrolled to its first row, or not the panel with the keyboard, which is
-// always kept there — it stays at the top, so each newly finished pipeline shows
-// up as it arrives. Scrolled down, it holds still instead (the offset moves with
-// the selected row), so the rows being read don't shift under the user; scrolling
-// back to the top resumes following. The view once held still whenever the panel
-// had the keyboard, even at the top, which hid every arrival just above the view
-// from the first `f`, click or opened pipeline on.
-//
-// At the top, the selection follows its pipeline only as far as the last visible
-// row: tview scrolls the view to keep a selection in sight, so following the
-// pipeline past the bottom edge would pull the view off the top. There the
-// highlight stays on the last visible row instead.
+// a different pipeline under the user's cursor — the one Enter then opens. The
+// view follows the newest-first rule in placeSelection.
 func (v *currentView) updateFinished(pipes []gitlab.Pipeline) {
 	f := v.finished.table
 	prevRow, _ := f.GetSelection()
@@ -208,17 +288,79 @@ func (v *currentView) updateFinished(pipes []gitlab.Pipeline) {
 			}
 		}
 	}
-	if v.finishedActive && hadPrev && prevOffset > 0 {
-		f.SetOffset(max(prevOffset+row-prevRow, 0), 0)
-	} else if visible := finishedVisibleRows(f); visible > 0 {
-		row = min(row, visible) // fillFinishedPipelines has already pinned the view to the top
-	}
-	f.Select(row, 0)
+	placeSelection(f, v.keyboard == curFinished && hadPrev, prevRow, prevOffset, row)
 }
 
-// finishedVisibleRows is how many data rows the finished panel showed when last
-// drawn (its height less the fixed header row), or 0 before its first draw.
-func finishedVisibleRows(t *tview.Table) int {
+// failingAt returns the failing ref on a failures-panel table row (1-based;
+// the header is row 0).
+func (v *currentView) failingAt(row int) (gitlab.FailingRef, bool) {
+	idx := row - 1
+	if idx < 0 || idx >= len(v.failingRefs) {
+		return gitlab.FailingRef{}, false
+	}
+	return v.failingRefs[idx], true
+}
+
+// updateFailing refills the failures panel, keeping the selection on the same
+// project and ref: a refresh brings a ref that failed again back to the top,
+// adds newly broken ones there, and drops recovered ones, so the row index
+// alone would slide onto a different ref. If the ref recovered, the selection
+// stays near the row it was on. The list is most recent failure first, so the
+// view follows the same newest-first rule as the finished list
+// (placeSelection).
+func (v *currentView) updateFailing(failing []gitlab.FailingRef) {
+	t := v.failing.table
+	prevRow, _ := t.GetSelection()
+	prevOffset, _ := t.GetOffset()
+	prev, hadPrev := v.failingAt(prevRow)
+
+	fillFailingRefs(v.failing, failing)
+	v.failingRefs = failing
+	if len(failing) == 0 {
+		return
+	}
+	row := min(max(prevRow, 1), len(failing))
+	if hadPrev {
+		for i, f := range failing {
+			if f.ProjectPath == prev.ProjectPath && f.Ref == prev.Ref {
+				row = i + 1
+				break
+			}
+		}
+	}
+	placeSelection(t, v.keyboard == curFailing && hadPrev, prevRow, prevOffset, row)
+}
+
+// placeSelection selects row in a newest-first list just refilled (which has
+// pinned its view to the top), row being where the previously selected item,
+// once on prevRow with the view at prevOffset, now sits. held says the list
+// has the keyboard and something was selected in it.
+//
+// The view follows the usual rule for a newest-first list. At the top — the
+// panel scrolled to its first row, or not the panel with the keyboard, which is
+// always kept there — it stays at the top, so each new arrival shows up. Scrolled
+// down, it holds still instead (the offset moves with the selected row), so the
+// rows being read don't shift under the user; scrolling back to the top resumes
+// following. The finished list once held still whenever it had the keyboard,
+// even at the top, which hid every arrival just above the view from the first
+// `f`, click or opened pipeline on.
+//
+// At the top, the selection follows its item only as far as the last visible
+// row: tview scrolls the view to keep a selection in sight, so following the
+// item past the bottom edge would pull the view off the top. There the
+// highlight stays on the last visible row instead.
+func placeSelection(t *tview.Table, held bool, prevRow, prevOffset, row int) {
+	if held && prevOffset > 0 {
+		t.SetOffset(max(prevOffset+row-prevRow, 0), 0)
+	} else if visible := visibleRows(t); visible > 0 {
+		row = min(row, visible)
+	}
+	t.Select(row, 0)
+}
+
+// visibleRows is how many data rows a list panel showed when last drawn (its
+// height less the fixed header row), or 0 before its first draw.
+func visibleRows(t *tview.Table) int {
 	_, _, _, h := t.GetInnerRect()
 	return max(h-1, 0)
 }
@@ -267,6 +409,7 @@ func (r curRow) when() string {
 
 func (v *currentView) update(s gitlab.Snapshot) {
 	v.updateFinished(s.RecentPipelines)
+	v.updateFailing(s.FailingRefs)
 
 	t := v.table
 	t.Clear()
@@ -446,6 +589,33 @@ func fillFinishedPipelines(p *panelTable, pipes []gitlab.Pipeline) {
 		// HMS matches the Current tree's TIME column above for a consistent look.
 		p.table.SetCell(r, colDuration, numCell(format.HMS(pipe.Duration)))
 		p.table.SetCell(r, colWhen, numCell(format.Ago(pipe.Finished)))
+	}
+}
+
+// fillFailingRefs renders the unresolved-failures panel: each ref whose newest
+// pipeline outcome is a failure, and for how long it has been failing, most
+// recent failure first (which isn't a column: the duration counts from when
+// the ref went red, and a ref that keeps failing has been red for a while but
+// failed again just now). The duration is in the failed status's red, which is
+// what the panel is about. PROJECT and REF flex; there's no ID column, since
+// the row opens the latest failure, whose id the detail view shows.
+func fillFailingRefs(p *panelTable, failing []gitlab.FailingRef) {
+	const colFailing = 2
+	p.reset("PROJECT", "REF", "FAILING")
+	rightAlignHeaders(p.table, colFailing)
+	p.table.ScrollToBeginning() // see fillFinishedPipelines
+	if len(failing) == 0 {
+		emptyRow(p.table, 3)
+		return
+	}
+	for i, f := range failing {
+		r := i + 1
+		p.addPath(f.ProjectPath)
+		p.table.SetCell(r, 0, nameCell(format.Base(f.ProjectPath)))
+		p.table.SetCell(r, 1, nameCell(displayRef(f.Ref)))
+		cell := numCell(format.Ago(f.Since))
+		cell.SetTextColor(statusColor(gitlab.StatusFailed))
+		p.table.SetCell(r, colFailing, cell)
 	}
 }
 
