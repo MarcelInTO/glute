@@ -162,6 +162,15 @@ which has a 12-cell floor. In Marcel's own config, one unaliased runner
 ("Cassatt WSL Linux docker") sets RUNNER's width; an alias for it would win back
 room at 120 columns. Another session had released v0.3.2 in between, so the
 runner change was rebased onto it before tagging.
+As of 2026-10-04: **v0.4.0 released** (tag on `aca0931`, both sides green
+first, checked the same way; the binary in the darwin archive reports
+v0.4.0). The Current tab's bottom row is now two panels. The finished list
+shows the whole recent window, topped up to at least 10 older runs. Beside it,
+"Unresolved failures" lists refs whose newest outcome is a failure, opened with
+`u`. Marcel chose **per ref** over per project, after trying per project first,
+and the **most recent failure first** order, so dead branches drift down. The
+mirror was idle, so the tag reached GitHub within seconds, and both releases
+were done about 2 minutes after the push.
 
 **Why:** Records live status and next-steps that aren't obvious from the code.
 
