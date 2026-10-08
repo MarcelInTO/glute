@@ -39,6 +39,16 @@ key ? esc enter
 expect Pipeline #96
 key esc
 
+# #98's child renders its manifests, then waits a minute and a half for a
+# runner: its TIME is wall clock (GitLab's duration says 42s), and its bar
+# marks the wait inside the bracket.
+key up up enter
+expect Pipeline #98
+expect 3:39 2:13
+expect ━╍╍╍╍━
+show
+key esc
+
 # f hands the keyboard back to the tree, and q quits from the tab.
 key f
 expect f to select

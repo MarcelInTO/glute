@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -31,7 +32,10 @@ func TestTimelineBar(t *testing.T) {
 		{"queued, then ran", span{ran: true, wait: sec(10), run: sec(20), end: sec(50)}, " ░███"},
 		{"ran to the very end", span{ran: true, wait: sec(90), run: sec(90), end: total}, "         █"},
 		{"too short to see still gets a cell", span{ran: true, wait: sec(40), run: sec(40), end: sec(41)}, "    █"},
-		{"a pipeline brackets its jobs", span{ran: true, pipeline: true, wait: 0, run: sec(20), end: total}, "──━━━━━━━━"},
+		{"a pipeline brackets its jobs", span{ran: true, pipeline: true, wait: 0, run: sec(20), end: total}, "╍╍━━━━━━━━"},
+		{"a pipeline waiting on its jobs mid-run", span{ran: true, pipeline: true, run: 0, end: total, idle: []idleGap{{sec(20), sec(70)}}}, "━━╍╍╍╍╍━━━"},
+		{"an idle stretch only fills the cells it covers whole", span{ran: true, pipeline: true, run: 0, end: total, idle: []idleGap{{sec(15), sec(42)}}}, "━━╍╍━━━━━━"},
+		{"one shorter than a cell leaves the bracket alone", span{ran: true, pipeline: true, run: 0, end: total, idle: []idleGap{{sec(25), sec(34)}}}, "━━━━━━━━━━"},
 		{"never ran: no bar", span{ran: false}, ""},
 	}
 	linear := newTimeAxis(total, nil, 10)
@@ -166,9 +170,128 @@ func TestTimelineSpans(t *testing.T) {
 		{wait: 90 * time.Second, run: 95 * time.Second, end: 130 * time.Second, ran: true, pipeline: true},
 	}
 	for i := range want {
-		if spans[i] != want[i] {
+		if !reflect.DeepEqual(spans[i], want[i]) {
 			t.Errorf("span %d = %+v, want %+v", i, spans[i], want[i])
 		}
+	}
+}
+
+// theBluTree is the shape of theblu_expeditionglobal #235448, at whole seconds
+// from the root's creation: a watcher job polls a child pipeline whose first
+// job is done in seconds, after which nothing in the child runs for 17 minutes
+// while its build jobs queue for GPU runners. GitLab gave the child a duration
+// of 22:14 and the watcher 39:49. Without the watcher, the root is idle then
+// too.
+func theBluTree(watcher bool) gitlab.ActivePipeline {
+	t0 := time.Date(2026, 10, 7, 22, 5, 53, 0, time.UTC)
+	at := func(s int) time.Time { return t0.Add(time.Duration(s) * time.Second) }
+	job := func(name string, queued, from, to int) gitlab.Job {
+		return gitlab.Job{Name: name, Stage: "test", Status: gitlab.StatusSuccess, Runner: "r",
+			Queued: time.Duration(queued) * time.Second, Started: at(from), Finished: at(to),
+			Duration: time.Duration(to-from) * time.Second}
+	}
+	root := gitlab.ActivePipeline{Pipeline: gitlab.Pipeline{ID: 235448, ProjectPath: "wevr/theblu", Ref: "dev",
+		Status: gitlab.StatusSuccess, Created: at(0), Started: at(2), Finished: at(2426), Duration: 2423 * time.Second}}
+	root.Jobs = []gitlab.Job{job("generate-config", 1, 1, 35)}
+	if watcher {
+		root.Jobs = append(root.Jobs, job("watch-trigger", 0, 36, 2426))
+	}
+	root.Children = []gitlab.ActivePipeline{{
+		Pipeline: gitlab.Pipeline{ID: 235449, ProjectPath: "wevr/theblu", Ref: "dev", Status: gitlab.StatusSuccess,
+			Created: at(37), Started: at(39), Finished: at(2412), Duration: 1334 * time.Second},
+		Jobs: []gitlab.Job{
+			job("Intro", 0, 38, 42),
+			job("ClientAndroidPicoShip", 1034, 1077, 1981),
+			job("ServerLinuxShip", 1506, 1550, 2160),
+			job("wvslog", 0, 2161, 2401),
+			job("pages", 0, 2402, 2409),
+		},
+	}}
+	return root
+}
+
+// TestPipelineIdle: a pipeline's idle stretches are those in which no job in
+// its subtree ran, queued jobs included, so the child's 17-minute wait for
+// runners is one; the root, whose watcher ran throughout, has only the second
+// between its two jobs, and without the watcher shares the child's wait.
+func TestPipelineIdle(t *testing.T) {
+	s := func(n int) time.Duration { return time.Duration(n) * time.Second }
+	idleOf := func(tree gitlab.ActivePipeline) (root, child []idleGap) {
+		rows := flattenActive([]gitlab.ActivePipeline{tree})
+		spans, _ := timelineSpans(rows)
+		for i, r := range rows {
+			switch {
+			case r.pipeline && !r.child:
+				root = spans[i].idle
+			case r.pipeline:
+				child = spans[i].idle
+			}
+		}
+		return root, child
+	}
+
+	root, child := idleOf(theBluTree(true))
+	wantChild := []idleGap{{s(42), s(1077)}, {s(2160), s(2161)}, {s(2401), s(2402)}, {s(2409), s(2412)}}
+	if !reflect.DeepEqual(child, wantChild) {
+		t.Errorf("child idle = %v, want %v", child, wantChild)
+	}
+	if want := []idleGap{{s(35), s(36)}}; !reflect.DeepEqual(root, want) {
+		t.Errorf("root idle with the watcher = %v, want %v", root, want)
+	}
+	root, _ = idleOf(theBluTree(false))
+	want := []idleGap{{s(35), s(38)}, {s(42), s(1077)}, {s(2160), s(2161)}, {s(2401), s(2402)}, {s(2409), s(2426)}}
+	if !reflect.DeepEqual(root, want) {
+		t.Errorf("root idle without the watcher = %v, want %v", root, want)
+	}
+
+	// A pipeline with no job that ran has nothing to measure against.
+	if _, child := idleOf(gitlab.ActivePipeline{
+		Pipeline: gitlab.Pipeline{Created: time.Unix(0, 0), Started: time.Unix(1, 0), Finished: time.Unix(60, 0)},
+		Jobs:     []gitlab.Job{{Name: "manual", Status: gitlab.StatusManual}},
+	}); child != nil {
+		t.Errorf("idle with no job that ran = %v, want none", child)
+	}
+}
+
+// TestDetailViewPipelineTimeIsWallClock renders theBluTree: a pipeline row's
+// TIME is its wall clock, start to finish, not GitLab's duration (the child's
+// 22:14), so it agrees with the watcher's; and the child's bar shows its wait
+// for runners as ╍ where the watcher's above it is solid.
+func TestDetailViewPipelineTimeIsWallClock(t *testing.T) {
+	d, _ := newTreeDashboard()
+	tree := theBluTree(true)
+	d.openDetail(tree.Pipeline)
+	d.detail.show(tree, nil)
+	out := renderToText(t, d, 130, 30)
+	t.Logf("detail view:\n%s", out)
+
+	tb := d.detail.table
+	rowOf := func(name string) int {
+		for row := 1; row < tb.GetRowCount(); row++ {
+			if strings.HasSuffix(tb.GetCell(row, detColName).Text, name) {
+				return row
+			}
+		}
+		t.Fatalf("no row for %q", name)
+		return 0
+	}
+	for name, want := range map[string]string{
+		"theblu · dev":    "40:24", // the root: started at 0:02, finished at 40:26
+		"↳ theblu · dev":  "39:33", // the child: 0:39 to 40:12, where GitLab says 22:14
+		"· watch-trigger": "39:50",
+	} {
+		if got := tb.GetCell(rowOf(name), detColTime).Text; got != want {
+			t.Errorf("%s: TIME = %q, want %q", name, got, want)
+		}
+	}
+	bar := func(name string) string {
+		return colorTag.ReplaceAllString(tb.GetCell(rowOf(name), detColTimeline).Text, "")
+	}
+	if child := bar("↳ theblu · dev"); !strings.Contains(child, "━╍╍╍") {
+		t.Errorf("child bar = %q, want its wait for runners shaded after its first job", child)
+	}
+	if watcher := bar("· watch-trigger"); strings.Contains(watcher, "░") {
+		t.Errorf("watcher bar = %q, want it solid: it ran the whole time", watcher)
 	}
 }
 

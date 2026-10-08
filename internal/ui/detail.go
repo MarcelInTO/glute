@@ -19,9 +19,10 @@ import (
 // out the way the active tree above does (pipeline, its jobs in execution order,
 // downstream children nested beneath), and swaps the live-monitoring columns for
 // timing ones: QUEUED (how long a job waited for a runner), START (how far into
-// the run it began), TIME, and a timeline bar per row. In a DAG pipeline the
-// durations alone don't add up to the wall-clock time; the bars show which
-// jobs overlapped and which chain the run actually waited on. RUNNER stays, as
+// the run it began), TIME (wall clock, for a pipeline as for a job), and a
+// timeline bar per row. In a DAG pipeline the durations alone don't add up to
+// the wall-clock time; the bars show which jobs overlapped and which chain the
+// run actually waited on. RUNNER stays, as
 // in the tree: "which runner ran the slow job" is the next question after "which
 // job was slow", and it has to be scannable down the list, not one selected row
 // at a time.
@@ -74,7 +75,7 @@ var detailBackground = tcell.NewRGBColor(0x26, 0x26, 0x26)
 
 // detailLegend explains the timeline's glyphs and, last, how to close the
 // view: the footer says so too, but a hint outside the panel is easy to miss.
-const detailLegend = "[silver]░[-] queued  [white]█[-] ran  [white]━[-] pipeline    [aqua]o[-] GitLab  [aqua]Esc[-]/[aqua]q[-] close "
+const detailLegend = "[silver]░[-] queued  [white]█[-] ran  [white]━[-] pipeline  [silver]╍[-] idle    [aqua]o[-] GitLab  [aqua]Esc[-]/[aqua]q[-] close "
 
 // detailInset is how far the modal is inset from each screen edge: about a
 // twelfth of the width and an eighth of the height, so enough of the tab shows
@@ -214,7 +215,16 @@ func (v *detailView) show(tree gitlab.ActivePipeline, err error) {
 		queued, start, took := "", "", ""
 		if ran {
 			start = offsetText(v.spans[i].run)
-			took = strings.TrimLeft(format.HMS(r.duration), " ")
+			// A pipeline's TIME is wall clock, start to finish, as its bar is.
+			// GitLab's own duration counts only the time some job in it was
+			// running, so a child whose jobs waited 17 minutes for runners read
+			// 22 minutes beside the 40-minute job that watched it; the bar's ╍
+			// shows where the rest went.
+			d := r.duration
+			if r.pipeline {
+				d = v.spans[i].end - v.spans[i].run
+			}
+			took = strings.TrimLeft(format.HMS(d), " ")
 			if !r.pipeline {
 				queued = offsetText(r.queued)
 			}
@@ -388,11 +398,17 @@ func offsetText(d time.Duration) string {
 // for a runner, a pipeline created but with nothing picked up yet — and
 // run..end is time spent working. ran is false for a row that never started (a
 // skipped or manual job), which draws no bar.
+//
+// A pipeline also waits after it starts: a child whose first job finished in
+// seconds can then sit for many minutes while the rest queue for runners.
+// idle holds those stretches of a pipeline's run..end, the ones in which no
+// job in it or beneath it was running (pipeline rows only; see pipelineIdle).
 type span struct {
 	wait, run, end time.Duration
 	ran            bool
 	pipeline       bool
 	status         gitlab.Status
+	idle           []idleGap
 }
 
 // timelineSpans places every row on a shared timeline: the origin is the root
@@ -434,7 +450,58 @@ func timelineSpans(rows []curRow) ([]span, time.Duration) {
 		}
 		spans[i] = s
 	}
+	for i := range spans {
+		if spans[i].pipeline && spans[i].ran {
+			spans[i].idle = pipelineIdle(rows, spans, i)
+		}
+	}
 	return spans, total
+}
+
+// pipelineIdle finds the stretches of pipeline row i's run in which none of
+// the jobs in its subtree — its own, and its children's, which follow it at a
+// greater depth — was running. A job queued for a runner isn't running, which
+// is the point: GitLab leaves those stretches out of a pipeline's duration, and
+// the bar shows them rather than hiding them. With no job that ran, there's
+// nothing to measure against, and the pipeline isn't drawn as idle.
+func pipelineIdle(rows []curRow, spans []span, i int) []idleGap {
+	var busy []idleGap
+	for j := i + 1; j < len(rows) && rows[j].depth > rows[i].depth; j++ {
+		if !rows[j].pipeline && spans[j].ran {
+			busy = append(busy, idleGap{spans[j].run, spans[j].end})
+		}
+	}
+	if len(busy) == 0 {
+		return nil
+	}
+	idle, _ := uncovered(busy, spans[i].run, spans[i].end)
+	return idle
+}
+
+// uncovered returns the stretches of [from, to] that no interval in busy
+// covers, and how much of [from, to] the intervals do cover. It sorts busy.
+func uncovered(busy []idleGap, from, to time.Duration) (gaps []idleGap, covered time.Duration) {
+	sort.Slice(busy, func(i, j int) bool { return busy[i].from < busy[j].from })
+	at := from
+	for _, b := range busy {
+		if b.from >= to {
+			break
+		}
+		if b.to <= at {
+			continue
+		}
+		if b.from > at {
+			gaps = append(gaps, idleGap{at, b.from})
+			at = b.from
+		}
+		end := min(b.to, to)
+		covered += end - at
+		at = end
+	}
+	if to > at {
+		gaps = append(gaps, idleGap{at, to})
+	}
+	return gaps, covered
 }
 
 // minIdleGap is the shortest idle stretch the timeline will cut out; below it
@@ -463,32 +530,7 @@ func idleGaps(spans []span, total time.Duration) []idleGap {
 	if len(busy) == 0 || total <= 0 {
 		return nil
 	}
-	sort.Slice(busy, func(i, j int) bool { return busy[i].from < busy[j].from })
-
-	// Walk the merged busy intervals, collecting the uncovered stretches
-	// between them (and before the first and after the last).
-	var idle []idleGap
-	var covered, at time.Duration
-	cur := busy[0]
-	flush := func(b idleGap) {
-		if b.from > at {
-			idle = append(idle, idleGap{at, b.from})
-		}
-		covered += b.to - b.from
-		at = b.to
-	}
-	for _, b := range busy[1:] {
-		if b.from <= cur.to {
-			cur.to = max(cur.to, b.to)
-			continue
-		}
-		flush(cur)
-		cur = b
-	}
-	flush(cur)
-	if total > at {
-		idle = append(idle, idleGap{at, total})
-	}
+	idle, covered := uncovered(busy, 0, total)
 
 	var cut []idleGap
 	for _, g := range idle {
@@ -615,11 +657,17 @@ func (a timeAxis) ceil(t time.Duration) int {
 
 // timelineBar draws a span on the axis: blank up to the wait, a light run of
 // waiting, then a solid run of working in the row's status color. A job gets ░
-// then █; a pipeline, which spans its jobs, gets the thinner ─ then ━ so it
-// reads as a bracket over them. Every row that ran gets at least one cell,
-// however short, so no job vanishes. A cut idle gap is a ┆ on every row, drawn
-// over anything passing through it, so the break reads as one line down the
-// table.
+// then █; a pipeline, which spans its jobs, gets ╍ then the thinner ━, so it
+// reads as a bracket over them, and ╍ again in any cell its idle stretches
+// fill whole. The pipeline's wait is a dashed line of the same weight as its
+// run, not ░: a full-height block in a thin bracket looked out of place, and
+// the dashes still set it apart where the status color is silver too (a
+// canceled pipeline). A cell the idle stretches only share with running work
+// stays ━, so a gap of seconds between two jobs doesn't flicker the bracket.
+// Every row that ran
+// gets at least one cell, however short, so no job vanishes. A cut idle gap
+// is a ┆ on every row, drawn over anything passing through it, so the break
+// reads as one line down the table.
 func timelineBar(s span, a timeAxis) string {
 	if a.total <= 0 || a.width <= 0 {
 		return ""
@@ -641,6 +689,11 @@ func timelineBar(s span, a timeAxis) string {
 		for i := runFrom; i < runTo; i++ {
 			kinds[i] = run
 		}
+		for _, g := range s.idle {
+			for i := max(a.ceil(g.from), runFrom); i < min(a.floor(g.to), runTo); i++ {
+				kinds[i] = wait
+			}
+		}
 	}
 	for _, sg := range a.segs {
 		if sg.gap && sg.cell < a.width {
@@ -654,7 +707,7 @@ func timelineBar(s span, a timeAxis) string {
 
 	waitGlyph, runGlyph := "░", "█"
 	if s.pipeline {
-		waitGlyph, runGlyph = "─", "━"
+		waitGlyph, runGlyph = "╍", "━"
 	}
 	var b strings.Builder
 	prev, tagged := blank, false

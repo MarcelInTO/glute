@@ -318,23 +318,33 @@ func SampleTrees(s Snapshot) map[int64]ActivePipeline {
 
 		tree := ActivePipeline{Pipeline: p}
 		switch p.ID {
-		case 98: // acme/payments/api · main · success: a needs: DAG plus a deploy child
+		case 98: // acme/payments/api · main · success: a needs: DAG plus a deploy child that waits for a runner
 			tree.Jobs = sortPipelineJobs([]Job{
 				job(9801, "build", "compile", StatusSuccess, "shared-linux-01", ms(0, 4), 0, ms(1, 10)),
 				job(9802, "test", "lint", StatusSuccess, "shared-linux-02", ms(0, 3), ms(0, 2), ms(0, 35)),
 				job(9803, "test", "unit-tests", StatusSuccess, "shared-linux-02", ms(0, 6), ms(1, 16), ms(2, 5), "compile"),
 				job(9804, "test", "integration-tests", StatusSuccess, "shared-linux-01", ms(0, 8), ms(1, 18), ms(3, 40), "compile"),
 			})
+			// The child renders its manifests at once, then its deploy waits
+			// for shared-linux-01, which integration-tests holds: nothing in
+			// the child runs for a minute and a half, so its bar shows the wait.
+			// Its Duration is GitLab's, which leaves that wait out.
 			child := Pipeline{ID: 202, ProjectPath: "acme/payments/deploy", Ref: "main", Status: StatusSuccess,
 				WebURL: "https://gitlab.example.com/acme/payments/deploy/-/pipelines/202",
-				Source: sourceParentPipeline, User: p.User, Created: start.Add(ms(5, 0)), Started: start.Add(ms(5, 3)),
-				Finished: p.Finished, Duration: ms(0, 37)}
+				Source: sourceParentPipeline, User: p.User, Created: start.Add(ms(3, 25)), Started: start.Add(ms(3, 27)),
+				Finished: p.Finished, Duration: ms(0, 42)}
+			childJob := func(id int64, stage, name, runner string, queued, from, dur time.Duration) Job {
+				return Job{ID: id, Name: name, Stage: stage, Status: StatusSuccess,
+					WebURL:      fmt.Sprintf("https://gitlab.example.com/acme/payments/deploy/-/jobs/%d", id),
+					ProjectPath: child.ProjectPath, Ref: child.Ref, PipelineID: child.ID, Runner: runner,
+					Created: child.Created, Queued: queued, Started: start.Add(from), Finished: start.Add(from + dur), Duration: dur}
+			}
 			tree.Children = []ActivePipeline{{
 				Pipeline: child,
-				Jobs: []Job{{ID: 9901, Name: "deploy-staging", Stage: "deploy", Status: StatusSuccess,
-					WebURL:      "https://gitlab.example.com/acme/payments/deploy/-/jobs/9901",
-					ProjectPath: child.ProjectPath, Ref: child.Ref, PipelineID: child.ID, Runner: "shared-linux-01",
-					Created: child.Created, Queued: ms(0, 3), Started: child.Started, Finished: child.Finished, Duration: ms(0, 37)}},
+				Jobs: []Job{
+					childJob(9900, "prepare", "render-manifests", "shared-linux-02", ms(0, 2), ms(3, 27), ms(0, 5)),
+					childJob(9901, "deploy", "deploy-staging", "shared-linux-01", ms(1, 31), ms(5, 3), ms(0, 37)),
+				},
 			}}
 		case 97: // acme/platform/gateway · feat/rate-limit · failed: stage order, a skipped job behind the failure
 			tree.Jobs = sortPipelineJobs([]Job{

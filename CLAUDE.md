@@ -340,14 +340,31 @@ Keep it CGO-free so cross-compilation stays trivial.
   bars show what overlapped and which chain the run waited on. The axis starts
   at the root's `Created` and runs to the latest finish anywhere in the tree (a
   child can outlive its root). A job draws `░` for its queue, then `█` for its
-  run in the status color. A pipeline draws `─` for created→started, then `━`,
-  so it reads as a bracket over its jobs. Every row that ran gets at least one
-  cell. TIME is GitLab's `duration` (which excludes gaps), while the bar is wall
-  clock, so they can differ. The bars are rendered in the table's draw hook at
-  the real width. **Text comes before the timeline:** the name and RUNNER
-  columns (both flexible) get their natural widths, and the timeline takes the
-  rest, down to `minTimelineWidth` (12, or a third of the room). Only past that
-  do the two text columns share the room max-min fair. The first version
+  run in the status color. A pipeline draws `━` while any job in it or beneath
+  it is running, so it reads as a bracket over its jobs, and a silver `╍` where
+  none is: before its first job starts, and in any stretch after that
+  (`pipelineIdle`) that fills a cell whole. Queued jobs count as idle, which is
+  the point. The idle glyph was `░` at first, which looked wrong as a fat block
+  inside a thin bracket. It was picked from a Pillow render of the candidates
+  in DejaVu and Noto Sans Mono. A silver `━` came out brighter than the
+  success green, so idle drew the eye. `╍` keeps the weight, and its dashes
+  still tell it apart on a canceled pipeline, which is silver too. On
+  theblu_expeditionglobal #235448 the child's first job was done in seconds,
+  then nothing in it ran for 17 minutes while its builds queued for GPU
+  runners. GitLab gave the child a `duration` of 22:14, beside the 39:49 of
+  the root's watch-trigger job polling it, and the two read as a contradiction.
+  So a pipeline row's TIME is wall clock, started→finished, like its bar, and
+  not GitLab's `duration`, which counts only the time some job was running.
+  The finished panel's DURATION and the Work tab's Slowest panel still use
+  GitLab's `duration`. A job row's TIME is its own `duration`, which is wall
+  clock already. glute can't shade the watcher's row instead: to GitLab it's an
+  ordinary job, and the child hangs off a bridge (`trigger-build`), which isn't a
+  row. Every row that ran gets at least one cell. The bars are rendered in the
+  table's draw hook at the real width. **Text comes before the timeline:** the
+  name and RUNNER columns (both flexible) get their natural widths, and the
+  timeline takes the rest, down to `minTimelineWidth` (12, or a third of the
+  room). Only past that do the two text columns share the room max-min fair.
+  The first version
   reserved 30 cells for the timeline first, which made job names unreadable at
   120 columns once RUNNER was added. With real data, one unaliased 24-character
   runner description sets RUNNER's width for every row, so a `[runner_aliases]`
