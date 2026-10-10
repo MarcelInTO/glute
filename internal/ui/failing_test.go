@@ -12,7 +12,7 @@ import (
 
 // TestFailingPanelListsRefs checks the unresolved-failures panel sits beside
 // the finished list and shows each failing ref and for how long it has been
-// failing, most recent failure first.
+// failing, the ref that went red most recently first.
 func TestFailingPanelListsRefs(t *testing.T) {
 	d, _ := newTreeDashboard()
 	out := renderToText(t, d, 120, 30)
@@ -112,7 +112,7 @@ func TestFailingKeys(t *testing.T) {
 
 // TestFailingSelectionFollowsRef checks the selection stays on its ref (a
 // project and a ref, not the project alone) when a refresh brings another ref
-// in on top, and when its own ref fails again and jumps to the top; and that
+// in on top, and when its own ref goes red anew and jumps to the top; and that
 // when its ref recovers, it stays near where it was.
 func TestFailingSelectionFollowsRef(t *testing.T) {
 	d, _ := newTreeDashboard()
@@ -144,8 +144,11 @@ func TestFailingSelectionFollowsRef(t *testing.T) {
 		t.Errorf("the view left the top (offset %d), hiding the new arrival", off)
 	}
 
-	// feat/old-checkout fails again: it moves to the top, and so does the selection.
+	// feat/old-checkout passes and then fails again between two refreshes:
+	// it went red just now, so it moves to the top, and so does the
+	// selection.
 	again := base[2]
+	again.Since = time.Now()
 	refresh(again, fresh, base[0], base[1], base[3])
 	if row, _ := fail.GetSelection(); selected() != "acme/payments/web feat/old-checkout" || row != 1 {
 		t.Errorf("after its ref failed again, the selection is on %q (row %d), want row 1", selected(), row)

@@ -209,12 +209,17 @@ Keep it CGO-free so cross-compilation stays trivial.
   running retry doesn't. Per-project tracking came first and was dropped: a
   success on any branch cleared the project, so a broken `main` could hide
   behind a green feature branch. Per ref, a branch abandoned after a failure
-  stays listed until it ages out of the store, so the list is ordered by the
-  **most recent failure**: refs that keep failing come back to the top, and
-  dead ones drift to the bottom. FAILING shows how long the ref has been red:
-  since the first failure after that success finished. The order isn't a
-  column. A `+` once marked "no success in the window, may be older". Per ref
-  it was on almost every new branch, and a ref red for the whole window
+  stays listed until it ages out of the store. FAILING shows how long the ref
+  has been red: since the first failure after that success finished. The list
+  is ordered by that column, **the ref that went red most recently first**,
+  so a ref sinks as it stays red, whether it's abandoned or still failing.
+  v0.4.0 ordered by the most recent failure instead, so refs that kept
+  failing came back to the top. On the real instance that put brooms-kiosk
+  `main`, red for 29 days and failed again the day before, above refs red
+  for 2, 5, 9 and 11 days. The column read 29d, 2d, 5d, 9d, 11d, which looked
+  like oldest first, and that was the complaint. A `+` once marked "no
+  success in the window, may be older". Per ref it was on almost every new
+  branch, and a ref red for the whole window
   already reads ~29d, so it went. A row opens the ref's latest failure in the
   detail view. The panel's width is set at draw time (`failingWidth`: 3/8 of
   the row, between 40 and 56 columns): the floor is what its focused title

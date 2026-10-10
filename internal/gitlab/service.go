@@ -95,10 +95,10 @@ func SampleSnapshot() Snapshot {
 			Source: "push", User: "amir", Finished: now.Add(-120 * time.Hour), Duration: 7*time.Minute + 12*time.Second},
 	}
 
-	// The refs still red, most recent failure first: the gateway's fresh
-	// failure on a branch, the scheduled backup failing every night since #89,
-	// then two that have gone quiet and drifted down — a feature branch nobody
-	// came back to, and a main with no success anywhere in the window.
+	// The refs still red, newest first by when each went red: the gateway's
+	// fresh failure on a branch, the scheduled backup failing every night
+	// since #89, then two that have gone quiet — a feature branch nobody came
+	// back to, and a main with no success anywhere in the window.
 	recentByID := func(id int64) Pipeline {
 		for _, p := range recent {
 			if p.ID == id {

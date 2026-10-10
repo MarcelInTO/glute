@@ -1,9 +1,9 @@
 # The unresolved-failures panel beside the finished list, against
 # `glute --sample` at 120x30. It starts at column 76, and its rows are 22-25,
-# most recent failure first: gateway feat/rate-limit (38m), nightly-backup
-# main (failing 4d, failed again 2d ago), then two gone quiet: web
-# feat/old-checkout (12d) and reports main (26d). Pinned to the desktop case,
-# so o reaches the stand-in opener.
+# newest first by when each went red: gateway feat/rate-limit (38m),
+# nightly-backup main (failing 4d, failed again 2d ago), then two gone quiet:
+# web feat/old-checkout (12d) and reports main (26d). Pinned to the desktop
+# case, so o reaches the stand-in opener.
 unset SSH_CONNECTION
 unset SSH_CLIENT
 unset SSH_TTY

@@ -33,9 +33,9 @@ import (
 //
 // The unresolved-failures panel lists every ref (branch, tag, merge request)
 // whose newest pipeline outcome is a failure, with how long it has been
-// failing: where attention is needed, however long ago it broke. The most
-// recent failure comes first, so a ref that keeps failing stays near the top
-// and an abandoned branch drifts down. It has less to say than the finished
+// failing: where attention is needed, however long ago it broke. The ref that
+// went red most recently comes first, so the list reads in the order of that
+// column, and a ref sinks as it stays red. It has less to say than the finished
 // list, so it's the narrower of the two. Its rows open the same way (the `u`
 // key, or a click), onto the ref's latest failed pipeline.
 //
@@ -302,12 +302,12 @@ func (v *currentView) failingAt(row int) (gitlab.FailingRef, bool) {
 }
 
 // updateFailing refills the failures panel, keeping the selection on the same
-// project and ref: a refresh brings a ref that failed again back to the top,
-// adds newly broken ones there, and drops recovered ones, so the row index
-// alone would slide onto a different ref. If the ref recovered, the selection
-// stays near the row it was on. The list is most recent failure first, so the
-// view follows the same newest-first rule as the finished list
-// (placeSelection).
+// project and ref: a refresh adds newly broken refs on top (a ref that
+// recovered and broke again between two refreshes among them) and drops
+// recovered ones, so the row index alone would slide onto a different ref. If
+// the ref recovered, the selection stays near the row it was on. The list is
+// newest first by when each ref went red, so the view follows the same
+// newest-first rule as the finished list (placeSelection).
 func (v *currentView) updateFailing(failing []gitlab.FailingRef) {
 	t := v.failing.table
 	prevRow, _ := t.GetSelection()
@@ -593,12 +593,12 @@ func fillFinishedPipelines(p *panelTable, pipes []gitlab.Pipeline) {
 }
 
 // fillFailingRefs renders the unresolved-failures panel: each ref whose newest
-// pipeline outcome is a failure, and for how long it has been failing, most
-// recent failure first (which isn't a column: the duration counts from when
-// the ref went red, and a ref that keeps failing has been red for a while but
-// failed again just now). The duration is in the failed status's red, which is
-// what the panel is about. PROJECT and REF flex; there's no ID column, since
-// the row opens the latest failure, whose id the detail view shows.
+// pipeline outcome is a failure, and for how long it has been failing, in the
+// order of that column: the ref that went red most recently first, however
+// recently the others failed again. The duration is in the failed status's
+// red, which is what the panel is about. PROJECT and REF flex; there's no ID
+// column, since the row opens the latest failure, whose id the detail view
+// shows.
 func fillFailingRefs(p *panelTable, failing []gitlab.FailingRef) {
 	const colFailing = 2
 	p.reset("PROJECT", "REF", "FAILING")

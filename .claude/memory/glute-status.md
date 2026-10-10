@@ -168,7 +168,10 @@ v0.4.0). The Current tab's bottom row is now two panels. The finished list
 shows the whole recent window, topped up to at least 10 older runs. Beside it,
 "Unresolved failures" lists refs whose newest outcome is a failure, opened with
 `u`. Marcel chose **per ref** over per project, after trying per project first,
-and the **most recent failure first** order, so dead branches drift down. The
+and at first the **most recent failure first** order, so dead branches drift
+down. On 2026-10-10 Marcel changed it to **newest red first** (by `Since`, the
+FAILING column), since a ref red 29d that failed again yesterday sat on top
+and the panel looked oldest-first. The
 mirror was idle, so the tag reached GitHub within seconds, and both releases
 were done about 2 minutes after the push.
 

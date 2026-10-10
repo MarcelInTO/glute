@@ -197,7 +197,8 @@ func TestRecentPipelinesTopsUpPastTheWindow(t *testing.T) {
 // TestFailingRefs: a ref is listed when its newest outcome is a failure, red
 // since the first failure after its last success on that ref — a success on
 // another branch doesn't clear it; canceled and running runs neither resolve
-// nor start a failure; ordered by the most recent failure first.
+// nor start a failure; ordered by when each went red, newest first, however
+// recently it failed again.
 func TestFailingRefs(t *testing.T) {
 	now := time.Now()
 	ago := func(h int) time.Time { return now.Add(-time.Duration(h) * time.Hour) }
@@ -214,9 +215,12 @@ func TestFailingRefs(t *testing.T) {
 		{ID: 26, ProjectPath: "p", Ref: "feat", Status: StatusSuccess, Finished: ago(8)},
 		// p/fix: one failure, nothing since.
 		{ID: 27, ProjectPath: "p", Ref: "fix", Status: StatusFailed, Finished: ago(5)},
-		// q/main: no success in the window: red since the first failure held.
+		// q/main: no success in the window: red since the first failure
+		// held. It failed again an hour ago, the newest failure of all, but
+		// it went red first, so it's last.
 		{ID: 30, ProjectPath: "q", Ref: "main", Status: StatusFailed, Finished: ago(40)},
 		{ID: 31, ProjectPath: "q", Ref: "main", Status: StatusFailed, Finished: ago(39)},
+		{ID: 32, ProjectPath: "q", Ref: "main", Status: StatusFailed, Finished: ago(1)},
 		// r/main: #41 was created later and failed, though #40 (a long run
 		// created first) finished after it — by creation order it's still red.
 		{ID: 40, ProjectPath: "r", Ref: "main", Status: StatusSuccess, Finished: ago(2)},
@@ -235,7 +239,7 @@ func TestFailingRefs(t *testing.T) {
 		{"r", "main", ago(3), 41},
 		{"p", "fix", ago(5), 27},
 		{"p", "main", ago(20), 23},
-		{"q", "main", ago(40), 31},
+		{"q", "main", ago(40), 32},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d failing refs %+v, want %d", len(got), got, len(want))

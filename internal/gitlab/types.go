@@ -200,7 +200,8 @@ type FailingRef struct {
 	// failure the store holds.
 	Since time.Time
 	// Latest is the ref's newest failed pipeline: the one to open, for which
-	// jobs failed and the GitLab link. The list is ordered by when it finished.
+	// jobs failed and the GitLab link. The list is ordered by Since, not by
+	// this.
 	Latest Pipeline
 }
 
@@ -267,7 +268,7 @@ type Snapshot struct {
 	// PollOptions.RecentMin.
 	RecentPipelines []Pipeline
 	// FailingRefs are the refs whose newest pipeline outcome is a failure,
-	// most recent failure first.
+	// newest first by when each went red (Since).
 	FailingRefs []FailingRef
 
 	RunningJobs []Job

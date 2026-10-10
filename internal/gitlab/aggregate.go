@@ -80,13 +80,16 @@ func recentPipelines(pipes []Pipeline, since time.Time, atLeast int) []Pipeline 
 //
 // It's per ref, so a broken main stays listed whatever passes on other
 // branches. The cost is that a branch abandoned after a failure stays listed
-// until it ages out of the store, so the order is the most recent failure
-// first: refs that keep failing come back to the top, and dead ones drift to
-// the bottom.
+// until it ages out of the store.
 //
 // Since is when the ref went red: when the first failure after that success
 // finished. A ref with no success in the store at all shows its first failure
-// there; nothing older than the store's window is known.
+// there; nothing older than the store's window is known. The list is ordered
+// by Since, newest first, which is the order of the panel's FAILING column.
+// Ordering by the latest failure instead put a ref red for 29 days on top,
+// because it had failed again the day before, and the column read 29d, 2d,
+// 5d: oldest first, to anyone reading it. So a ref that keeps failing sinks
+// with age, like an abandoned one.
 func failingRefs(pipes []Pipeline) []FailingRef {
 	type key struct{ path, ref string }
 	byRef := map[key][]Pipeline{}
@@ -116,6 +119,9 @@ func failingRefs(pipes []Pipeline) []FailingRef {
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if !out[i].Since.Equal(out[j].Since) {
+			return out[i].Since.After(out[j].Since)
+		}
 		if li, lj := pipeEnd(out[i].Latest), pipeEnd(out[j].Latest); !li.Equal(lj) {
 			return li.After(lj)
 		}
