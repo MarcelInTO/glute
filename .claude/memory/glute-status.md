@@ -9,8 +9,8 @@ metadata:
 ---
 
 glute is a single-binary, read-only Go TUI dashboard for GitLab CI/CD
-(Current, Work, and Infrastructure tabs). Repo: `/mnt/md0/devWevr/glute`; see its
-CLAUDE.md for decisions and rationale.
+(Current, Work, and Infrastructure tabs). See the repo's CLAUDE.md for
+decisions and rationale.
 
 As of 2026-07-04: Phases 1–3 are done and committed on a local `main`
 (scaffold + `glute auth`, the `internal/gitlab` data layer, and the tview
@@ -61,8 +61,8 @@ downstream children in one query, replacing the old per-pipeline
 sort by dependency *depth* (then stage/name), matching the GitLab UI's DAG view;
 falls back to stage order when no `needs`. Bulk/history stays REST. Scope was
 deliberately **incremental** (not a full data-layer migration) — GraphQL is now
-in place to extend to the future stats pages. Verified live against
-studio.wevr.com (GitLab 18.9.1-ee). This is the direction to build on for stats.
+in place to extend to the future stats pages. Verified live against the
+instance. This is the direction to build on for stats.
 **Caveat for that stats work:** GitLab's GraphQL does *not* do server-side
 aggregation (no group-by/avg/count) — you still pull records and aggregate
 client-side, same as REST. Its benefit is precise field selection and fewer
@@ -159,7 +159,7 @@ first, checked the same way). It adds a RUNNER column to the finished-pipeline
 detail view, asked for to trace slow jobs to their runners. The view's width now
 goes to text first (the name and runner, both flexible), then the timeline,
 which has a 12-cell floor. In Marcel's own config, one unaliased runner
-("Cassatt WSL Linux docker") sets RUNNER's width; an alias for it would win back
+description sets RUNNER's width; an alias for it would win back
 room at 120 columns. Another session had released v0.3.2 in between, so the
 runner change was rebased onto it before tagging.
 As of 2026-10-04: **v0.4.0 released** (tag on `aca0931`, both sides green

@@ -146,11 +146,11 @@ Keep it CGO-free so cross-compilation stays trivial.
   match our `Status` constants.
 - **Both job paths return retried attempts, and only one marks them.** GraphQL
   `pipeline.jobs` returns every attempt, with `retried` on the superseded ones.
-  On the instance, tlp-sz!438, a `SUCCESS` pipeline, lists two `FAILED` attempts
+  On the instance, one MR's `SUCCESS` pipeline lists two `FAILED` attempts
   of a job that later passed, plus retried *bridges* whose superseded child
   pipelines still exist. The REST project jobs list (the bulk path) returns
-  every attempt too, but with **no** retried field: sems-hosting pipeline 234953
-  lists four `validate` runs. The store keeps every attempt, since they consumed
+  every attempt too, but with **no** retried field: pipeline 234953 lists
+  four `validate` runs. The store keeps every attempt, since they consumed
   runners and count for compute and failure stats. Both trees (Current and
   detail) show only the latest attempt: `latestAttempts` in the shared
   `treeBuilder` keeps the highest id per job name within a pipeline, and drops
@@ -214,7 +214,7 @@ Keep it CGO-free so cross-compilation stays trivial.
   is ordered by that column, **the ref that went red most recently first**,
   so a ref sinks as it stays red, whether it's abandoned or still failing.
   v0.4.0 ordered by the most recent failure instead, so refs that kept
-  failing came back to the top. On the real instance that put brooms-kiosk
+  failing came back to the top. On the real instance that put one project's
   `main`, red for 29 days and failed again the day before, above refs red
   for 2, 5, 9 and 11 days. The column read 29d, 2d, 5d, 9d, 11d, which looked
   like oldest first, and that was the complaint. A `+` once marked "no
@@ -354,7 +354,7 @@ Keep it CGO-free so cross-compilation stays trivial.
   in DejaVu and Noto Sans Mono. A silver `━` came out brighter than the
   success green, so idle drew the eye. `╍` keeps the weight, and its dashes
   still tell it apart on a canceled pipeline, which is silver too. On
-  theblu_expeditionglobal #235448 the child's first job was done in seconds,
+  pipeline #235448 the child's first job was done in seconds,
   then nothing in it ran for 17 minutes while its builds queued for GPU
   runners. GitLab gave the child a `duration` of 22:14, beside the 39:49 of
   the root's watch-trigger job polling it, and the two read as a contradiction.
@@ -381,10 +381,10 @@ Keep it CGO-free so cross-compilation stays trivial.
   `timeAxis`). A stretch is idle when no job is queued or running; pipeline
   spans don't count as busy, since they cover their own gaps. It's cut when it
   lasts at least `minIdleGap` (1m) and **longer than all the busy time
-  combined**. That rule is what keeps a run's shape honest: sems-platform's
+  combined**. That rule is what keeps a run's shape honest: one project's
   5½-minute wait before `release` in a 12-minute run is part of where the time
-  went, and stays to scale. tlp-sz!438, whose job was retried 3½ days after the
-  rest, had a 95h axis with its 48-minute child in one column; three cuts
+  went, and stays to scale. An MR pipeline whose job was retried 3½ days after
+  the rest had a 95h axis with its 48-minute child in one column; three cuts
   remove 94h and spread the child's jobs across the bar. A cut takes one cell,
   drawn `┆` on every row as an axis break. Each busy stretch gets at least one
   cell (a 4-second retry after the last cut otherwise vanished under the `┆`),
@@ -683,8 +683,8 @@ Keep it CGO-free so cross-compilation stays trivial.
   here; don't "fix" it by moving the module cache, which has to stay inside the
   project dir.
 - **Runner tags on `studio.wevr.com`**: instance docker runners take untagged jobs
-  (what this pipeline uses — verified against `wevr-public/cli-tester`, whose
-  untagged `test:linux` lands on the "Braque/Bazille - Linux Docker" runners and
-  pulls an external image); native runners exist behind the tags `macos` and
-  `wevrCodeBuildWin` if a job ever needs them. Go cross-compiles CGO-free, so one
-  Linux runner produces every platform and no build matrix is needed.
+  (what this pipeline uses — verified against another project whose untagged
+  Linux job lands on them and pulls an external image); native macOS and
+  Windows runners exist behind their own tags (Settings → CI/CD → Runners) if a
+  job ever needs them. Go cross-compiles CGO-free, so one Linux runner produces
+  every platform and no build matrix is needed.

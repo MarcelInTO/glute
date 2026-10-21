@@ -84,13 +84,13 @@ func TestIdleGapsCutOnlyDominantIdle(t *testing.T) {
 	job := func(from, to int) span { return span{ran: true, wait: mins(from), run: mins(from), end: mins(to)} }
 	root := span{ran: true, pipeline: true, run: 0, end: mins(12)}
 
-	// sems-platform's shape: 6.5 busy minutes, then a 5.5-minute wait for release.
+	// A 12-minute run's shape: 6.5 busy minutes, then a 5.5-minute wait for release.
 	shaped := []span{root, job(0, 6), job(1, 5), job(11, 12)}
 	if got := idleGaps(shaped, mins(12)); len(got) != 0 {
 		t.Errorf("a wait shorter than the work was cut: %+v", got)
 	}
 
-	// tlp-sz!438's shape: a minute of work, then a retry four days later.
+	// A retried MR pipeline's shape: a minute of work, then a retry four days later.
 	late := []span{{ran: true, pipeline: true, end: mins(4*24*60 + 1)}, job(0, 1), job(4*24*60, 4*24*60+1)}
 	got := idleGaps(late, mins(4*24*60+1))
 	if len(got) != 1 || got[0].from != mins(1) || got[0].to != mins(4*24*60) {
@@ -176,13 +176,13 @@ func TestTimelineSpans(t *testing.T) {
 	}
 }
 
-// theBluTree is the shape of theblu_expeditionglobal #235448, at whole seconds
+// gpuWaitTree is the shape of pipeline #235448, at whole seconds
 // from the root's creation: a watcher job polls a child pipeline whose first
 // job is done in seconds, after which nothing in the child runs for 17 minutes
 // while its build jobs queue for GPU runners. GitLab gave the child a duration
 // of 22:14 and the watcher 39:49. Without the watcher, the root is idle then
 // too.
-func theBluTree(watcher bool) gitlab.ActivePipeline {
+func gpuWaitTree(watcher bool) gitlab.ActivePipeline {
 	t0 := time.Date(2026, 10, 7, 22, 5, 53, 0, time.UTC)
 	at := func(s int) time.Time { return t0.Add(time.Duration(s) * time.Second) }
 	job := func(name string, queued, from, to int) gitlab.Job {
@@ -190,20 +190,20 @@ func theBluTree(watcher bool) gitlab.ActivePipeline {
 			Queued: time.Duration(queued) * time.Second, Started: at(from), Finished: at(to),
 			Duration: time.Duration(to-from) * time.Second}
 	}
-	root := gitlab.ActivePipeline{Pipeline: gitlab.Pipeline{ID: 235448, ProjectPath: "wevr/theblu", Ref: "dev",
+	root := gitlab.ActivePipeline{Pipeline: gitlab.Pipeline{ID: 235448, ProjectPath: "group/app", Ref: "dev",
 		Status: gitlab.StatusSuccess, Created: at(0), Started: at(2), Finished: at(2426), Duration: 2423 * time.Second}}
 	root.Jobs = []gitlab.Job{job("generate-config", 1, 1, 35)}
 	if watcher {
 		root.Jobs = append(root.Jobs, job("watch-trigger", 0, 36, 2426))
 	}
 	root.Children = []gitlab.ActivePipeline{{
-		Pipeline: gitlab.Pipeline{ID: 235449, ProjectPath: "wevr/theblu", Ref: "dev", Status: gitlab.StatusSuccess,
+		Pipeline: gitlab.Pipeline{ID: 235449, ProjectPath: "group/app", Ref: "dev", Status: gitlab.StatusSuccess,
 			Created: at(37), Started: at(39), Finished: at(2412), Duration: 1334 * time.Second},
 		Jobs: []gitlab.Job{
 			job("Intro", 0, 38, 42),
-			job("ClientAndroidPicoShip", 1034, 1077, 1981),
-			job("ServerLinuxShip", 1506, 1550, 2160),
-			job("wvslog", 0, 2161, 2401),
+			job("build-client", 1034, 1077, 1981),
+			job("build-server", 1506, 1550, 2160),
+			job("collect-logs", 0, 2161, 2401),
 			job("pages", 0, 2402, 2409),
 		},
 	}}
@@ -230,7 +230,7 @@ func TestPipelineIdle(t *testing.T) {
 		return root, child
 	}
 
-	root, child := idleOf(theBluTree(true))
+	root, child := idleOf(gpuWaitTree(true))
 	wantChild := []idleGap{{s(42), s(1077)}, {s(2160), s(2161)}, {s(2401), s(2402)}, {s(2409), s(2412)}}
 	if !reflect.DeepEqual(child, wantChild) {
 		t.Errorf("child idle = %v, want %v", child, wantChild)
@@ -238,7 +238,7 @@ func TestPipelineIdle(t *testing.T) {
 	if want := []idleGap{{s(35), s(36)}}; !reflect.DeepEqual(root, want) {
 		t.Errorf("root idle with the watcher = %v, want %v", root, want)
 	}
-	root, _ = idleOf(theBluTree(false))
+	root, _ = idleOf(gpuWaitTree(false))
 	want := []idleGap{{s(35), s(38)}, {s(42), s(1077)}, {s(2160), s(2161)}, {s(2401), s(2402)}, {s(2409), s(2426)}}
 	if !reflect.DeepEqual(root, want) {
 		t.Errorf("root idle without the watcher = %v, want %v", root, want)
@@ -253,13 +253,13 @@ func TestPipelineIdle(t *testing.T) {
 	}
 }
 
-// TestDetailViewPipelineTimeIsWallClock renders theBluTree: a pipeline row's
+// TestDetailViewPipelineTimeIsWallClock renders gpuWaitTree: a pipeline row's
 // TIME is its wall clock, start to finish, not GitLab's duration (the child's
 // 22:14), so it agrees with the watcher's; and the child's bar shows its wait
 // for runners as ╍ where the watcher's above it is solid.
 func TestDetailViewPipelineTimeIsWallClock(t *testing.T) {
 	d, _ := newTreeDashboard()
-	tree := theBluTree(true)
+	tree := gpuWaitTree(true)
 	d.openDetail(tree.Pipeline)
 	d.detail.show(tree, nil)
 	out := renderToText(t, d, 130, 30)
@@ -276,8 +276,8 @@ func TestDetailViewPipelineTimeIsWallClock(t *testing.T) {
 		return 0
 	}
 	for name, want := range map[string]string{
-		"theblu · dev":    "40:24", // the root: started at 0:02, finished at 40:26
-		"↳ theblu · dev":  "39:33", // the child: 0:39 to 40:12, where GitLab says 22:14
+		"app · dev":       "40:24", // the root: started at 0:02, finished at 40:26
+		"↳ app · dev":     "39:33", // the child: 0:39 to 40:12, where GitLab says 22:14
 		"· watch-trigger": "39:50",
 	} {
 		if got := tb.GetCell(rowOf(name), detColTime).Text; got != want {
@@ -287,7 +287,7 @@ func TestDetailViewPipelineTimeIsWallClock(t *testing.T) {
 	bar := func(name string) string {
 		return colorTag.ReplaceAllString(tb.GetCell(rowOf(name), detColTimeline).Text, "")
 	}
-	if child := bar("↳ theblu · dev"); !strings.Contains(child, "━╍╍╍") {
+	if child := bar("↳ app · dev"); !strings.Contains(child, "━╍╍╍") {
 		t.Errorf("child bar = %q, want its wait for runners shaded after its first job", child)
 	}
 	if watcher := bar("· watch-trigger"); strings.Contains(watcher, "░") {
