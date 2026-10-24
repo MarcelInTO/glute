@@ -174,6 +174,11 @@ FAILING column), since a ref red 29d that failed again yesterday sat on top
 and the panel looked oldest-first. The
 mirror was idle, so the tag reached GitHub within seconds, and both releases
 were done about 2 minutes after the push.
+As of 2026-10-24: **v0.4.1 released** (tag on `190cc0c`, both sides green
+first, checked the same way; the binary in the darwin archive reports
+v0.4.1). A patch release of the two changes since v0.4.0: a pipeline row's
+TIME in the detail view is wall clock, with a silver `╍` in its bar where
+nothing ran, and the unresolved failures panel is ordered newest red first.
 
 **Why:** Records live status and next-steps that aren't obvious from the code.
 
